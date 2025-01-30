@@ -3,8 +3,8 @@ chmod +x sb.sh
 mv -f sb.sh /usr/local/bin/sb
 
 # 定义变量
-SB_URL="https://gh-proxy.com/https://github.com/SagerNet/sing-box/releases/download/v1.10.7/sing-box-1.10.7-linux-amd64.tar.gz"
-CONFIG_URL="https://sub.nuistgpt.top/5Cthkd6hve73c61oQRzCnpb/api/file/primary-sing-conf"
+SB_URL=""
+CONFIG_URL=""
 
 TARGET_DIR="$HOME"
 EXTRACT_DIR="$HOME/sing-box"  # 提取内容到的目标目录
