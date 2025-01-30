@@ -1,4 +1,4 @@
-curl -L -o sb.sh https://gh-proxy.com/https://raw.githubusercontent.com/Oterea/sing-box-shell/refs/heads/main/sb.sh?token=GHSAT0AAAAAAC5ZKK7DE6S5KUP2SPPJHVNAZ43GGFA
+curl -L -o sb.sh https://gh-proxy.com/https://github.com/Oterea/sing-box-shell/blob/main/sb.sh
 chmod +x sb.sh
 mv -f sb.sh /usr/local/bin/sb
 
