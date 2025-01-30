@@ -262,6 +262,7 @@ while true; do
                 echo "$ALIAS_STATUS" >> ~/.bashrc
                 echo -e "${GREEN}INFO: Alias 'status' added successfully.${RESET}"
             fi
+            source $HOME/.bashrc
             ;;
 
 
