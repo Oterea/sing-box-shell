@@ -172,7 +172,7 @@ while true; do
                 source $URL
 
             else
-                echo "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
+                echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
             fi
 
 
