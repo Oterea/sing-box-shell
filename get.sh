@@ -1,4 +1,4 @@
-curl -L -o sb.sh https://raw.githubusercontent.com/Oterea/sing-box-shell/main/sb.sh
+curl -L -o sb.sh https://github.oterea.top/https://raw.githubusercontent.com/Oterea/sing-box-shell/main/sb.sh
 chmod +x sb.sh
 
 
