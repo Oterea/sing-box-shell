@@ -20,5 +20,5 @@ alias sb="source $EXTRACT_DIR/sb.sh"
 
 # 写入文件
 echo "PROXY=$proxy" > "$URL"
-echo "SB_URL=$proxy/$sb_url" > "$URL"
+echo "SB_URL=$proxy/$sb_url" >> "$URL"
 echo "CONFIG_URL=$config_url" >> "$URL"
