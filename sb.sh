@@ -32,7 +32,7 @@ fi
 while true; do
 
     echo -e "${PURPLE}+==========================================+${RESET}"
-    echo -e "${PURPLE}+                  Main menu                +${RESET}"
+    echo -e "${PURPLE}+                  Main menu               +${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
     echo -e "${CYAN}  1 ${WHITE}|              ${CYAN}Update sing-box          ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
@@ -53,7 +53,7 @@ while true; do
 
         1)
             echo -e "${PURPLE}============================================${RESET}"
-            echo -e "${PURPLE}              Update sing-box                ${RESET}"
+            echo -e "${PURPLE}              Updating sing-box             ${RESET}"
 
             echo -e "${CYAN}默认下载链接: $SB_URL${RESET}"
             echo -e "${CYAN}是否使用默认下载链接([Y]/n): ${RESET}"
@@ -133,8 +133,8 @@ while true; do
 
             ;;
         2)
-
-            echo -e "${PURPLE}@@@@@@@@@@@@@@ update config @@@@@@@@@@@@@@@${RESET}"
+            echo -e "${PURPLE}============================================${RESET}"
+            echo -e "${PURPLE}              Updating config             ${RESET}"
             echo -e "${CYAN}默认订阅链接: $CONFIG_URL${RESET}"
             echo -e "${CYAN}是否使用默认订阅链接([Y]/n): ${RESET}"
             read sub_choice
@@ -164,16 +164,9 @@ while true; do
 
 
             # 检查是否安装 curl 或 wget
-            if command -v curl >/dev/null 2>&1; then
-                echo -e "${GREEN}INFO: Using curl to fetch the content...${RESET}"
-                curl -s "$CONFIG_URL" -o "$CONFIG_FILE"  # 直接覆盖目标文件
-            elif command -v wget >/dev/null 2>&1; then
-                echo -e "${GREEN}INFO: Using wget to fetch the content...${RESET}"
-                wget -qO "$CONFIG_FILE" "$CONFIG_URL"  # 直接覆盖目标文件
-            else
-                echo -e "${YELLOW}WARN: Please install wget or curl.${RESET}"
-                break
-            fi
+            echo -e "${GREEN}INFO: Using curl to fetch the config.json...${RESET}"
+            curl -s "$CONFIG_URL" -o "$CONFIG_FILE"  # 直接覆盖目标文件
+            
 
             # 检查写入是否成功
             if [ -f "$CONFIG_FILE" ]; then
@@ -215,52 +208,24 @@ while true; do
             fi
 
 
-            # 设置 start 和 stop 的复合命令别名
-            ALIAS_START="alias start='sudo systemctl start sb && sleep 1 && curl ipinfo.io && echo'"
-            ALIAS_STOP="alias stop='sudo systemctl stop sb && curl ipinfo.io && echo'"
-            ALIAS_STATUS="alias status='sudo systemctl status sb'"
-
-            # 检查并设置 start 别名
-            if grep -Fxq "$ALIAS_START" ~/.bashrc; then
-                sed -i '/^alias start=/d' ~/.bashrc
-                echo "$ALIAS_START" >> ~/.bashrc
-                echo -e "${GREEN}INFO: Alias 'start' update successfully.${RESET}"
-            else
-                echo "$ALIAS_START" >> ~/.bashrc
-                echo -e "${GREEN}INFO: Alias 'start' added successfully.${RESET}"
-            fi
-
-            # 检查并设置 stop 别名
-            if grep -Fxq "$ALIAS_STOP" ~/.bashrc; then
-                sed -i '/^alias stop=/d' ~/.bashrc
-                echo "$ALIAS_STOP" >> ~/.bashrc
-                echo -e "${GREEN}INFO: Alias 'stop' update successfully.${RESET}"
-            else
-                echo "$ALIAS_STOP" >> ~/.bashrc
-                echo -e "${GREEN}INFO: Alias 'stop' added successfully.${RESET}"
-            fi
-
-            # 检查并设置 status 别名
-            if grep -Fxq "$ALIAS_STATUS" ~/.bashrc; then
-                sed -i '/^alias status=/d' ~/.bashrc
-                echo "$ALIAS_STATUS" >> ~/.bashrc
-                echo -e "${GREEN}INFO: Alias 'status' update successfully.${RESET}"
-            else
-                echo "$ALIAS_STATUS" >> ~/.bashrc
-                echo -e "${GREEN}INFO: Alias 'status' added successfully.${RESET}"
-            fi
-            source $HOME/.bashrc
             ;;
         3)  
-            systemctl start sb
+            sudo systemctl start sb
             curl ipinfo.io
+            echo
             echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
-            break
             ;;
         4)  
-            systemctl stop sb
+            sudo systemctl stop sb
             curl ipinfo.io
+            echo
             echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
+            ;;
+        5)  
+            sudo rm -r $EXTRACT_DIR
+            sudo rm /etc/systemd/system/sb.service
+            echo
+            echo -e "${GREEN}INFO: sing-box removed successfully.${RESET}"
             break
             ;;
 
