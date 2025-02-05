@@ -3,8 +3,9 @@ chmod +x sb.sh
 
 
 # 定义变量
-SB_URL=""
-CONFIG_URL=""
+proxy="https://github.oterea.top"
+sb_url="https://github.com/SagerNet/sing-box/releases/download/v1.11.0/sing-box-1.11.0-linux-amd64.tar.gz"
+config_url=""
 
 TARGET_DIR="$HOME"
 EXTRACT_DIR="$HOME/sing-box"  # 提取内容到的目标目录
@@ -18,5 +19,6 @@ mv -f sb.sh $EXTRACT_DIR/sb.sh
 alias sb="source $EXTRACT_DIR/sb.sh"
 
 # 写入文件
-echo "SB_URL=$SB_URL" > "$URL"
-echo "CONFIG_URL=$CONFIG_URL" >> "$URL"
+echo "PROXY=$proxy" > "$URL"
+echo "SB_URL=$proxy/$sb_url" > "$URL"
+echo "CONFIG_URL=$config_url" >> "$URL"

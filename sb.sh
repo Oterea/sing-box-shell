@@ -74,10 +74,10 @@ while true; do
                 # 检查 url.txt 是否已经有 SB_URL，如果有则替换，否则追加
                 if grep -q '^SB_URL=' $URL; then
                     # 替换已有的 SB_URL
-                    sed -i 's|^SB_URL=.*|SB_URL="'"$sb_url"'"|' $URL
+                    sed -i 's|^SB_URL=.*|SB_URL="'"$PROXY/$sb_url"'"|' $URL
                 else
                     # 追加新变量到 url.txt
-                    echo "SB_URL=\"$sb_url\"" >> $URL
+                    echo "SB_URL=\"$PROXY/$sb_url\"" >> $URL
                 fi
 
             else
