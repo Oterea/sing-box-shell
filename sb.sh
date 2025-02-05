@@ -23,15 +23,16 @@ CONFIG_FILE="$EXTRACT_DIR/config.json"  # 保存为 config.json 文件
 # 一级菜单
 while true; do
 
-    echo -e "${PURPLE}@@@@@@@@@@@@@@@@@ sing-box @@@@@@@@@@@@@@@@@${RESET}"
+    echo -e "${PURPLE}+==========================================+${RESET}"
+    echo -e "${PURPLE}+                  sing-box                +${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    printf "${WHITE}| ${CYAN}%-1s ${WHITE}| ${CYAN}%-43s ${WHITE}|\n" "1" "检查下载工具：wget or curl"
+    echo -e "${CYAN}  1 ${WHITE}|              ${CYAN}Check tools              ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    printf "${WHITE}| ${CYAN}%-1s ${WHITE}| ${CYAN}%-38s ${WHITE}|\n" "2" "更新 sing-box"
+    echo -e "${CYAN}  2 ${WHITE}|              ${CYAN}Update sing-box          ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    printf "${WHITE}| ${CYAN}%-1s ${WHITE}| ${CYAN}%-40s ${WHITE}|\n" "3" "更新配置"
+    echo -e "${CYAN}  3 ${WHITE}|              ${CYAN}Update config            ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    printf "${WHITE}| ${CYAN}%-1s ${WHITE}| ${CYAN}%-40s ${WHITE}|\n" "0" "退出脚本"
+    echo -e "${CYAN}  0 ${WHITE}|              ${CYAN}Exit shell               ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
 
     # 提示用户输入
