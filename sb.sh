@@ -20,17 +20,27 @@ URL=$EXTRACT_DIR/url.txt
 source $URL
 CONFIG_FILE="$EXTRACT_DIR/config.json"  # 保存为 config.json 文件
 
+# 检查curl下载工具
+if command -v curl >/dev/null 2>&1; then
+    echo -e "${GREEN}curl 已安装${RESET}"
+else
+    echo -e "${YELLOW}curl 未安装${RESET}"
+    exit
+fi
+
 # 一级菜单
 while true; do
 
     echo -e "${PURPLE}+==========================================+${RESET}"
-    echo -e "${PURPLE}+                  sing-box                +${RESET}"
+    echo -e "${PURPLE}+                  Main menu                +${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  1 ${WHITE}|              ${CYAN}Check tools              ${RESET}"
+    echo -e "${CYAN}  1 ${WHITE}|              ${CYAN}Update sing-box          ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  2 ${WHITE}|              ${CYAN}Update sing-box          ${RESET}"
+    echo -e "${CYAN}  2 ${WHITE}|              ${CYAN}Update config            ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  3 ${WHITE}|              ${CYAN}Update config            ${RESET}"
+    echo -e "${CYAN}  3 ${WHITE}|              ${CYAN}Start sing-box           ${RESET}"
+    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
+    echo -e "${CYAN}  4 ${WHITE}|              ${CYAN}Stop sing-box           ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
     echo -e "${CYAN}  0 ${WHITE}|              ${CYAN}Exit shell               ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
@@ -40,23 +50,10 @@ while true; do
     read choice
 
     case $choice in
+
         1)
-            echo -e "${BLUE}===================Setting tools===================${RESET}"
-            if command -v wget >/dev/null 2>&1; then
-                echo -e "${GREEN}wget 已安装${RESET}"
-            else
-                echo -e "${YELLOW}wget 未安装${RESET}"
-            fi
-
-            if command -v curl >/dev/null 2>&1; then
-                echo -e "${GREEN}curl 已安装${RESET}"
-            else
-                echo -e "${YELLOW}curl 未安装${RESET}"
-            fi
-            ;;
-        2)
-
-            echo -e "${PURPLE}@@@@@@@@@@@@@ update sing-box @@@@@@@@@@@@@@${RESET}"
+            echo -e "${PURPLE}============================================${RESET}"
+            echo -e "${PURPLE}              Update sing-box                ${RESET}"
 
             echo -e "${CYAN}默认下载链接: $SB_URL${RESET}"
             echo -e "${CYAN}是否使用默认下载链接([Y]/n): ${RESET}"
@@ -88,25 +85,14 @@ while true; do
             FILE_NAME=$(basename "$SB_URL")
 
             success=1
-            # 检查是否安装 wget 或 curl
-            if command -v wget >/dev/null 2>&1; then
-                echo -e "${GREEN}INFO: Using wget to download the file...${RESET}"
-                echo "$FILE_NAME"
-                wget -O "$TARGET_DIR/$FILE_NAME" "$SB_URL"
-                # 获取 wget 命令的退出状态码
-                if [ $? -eq 0 ]; then
-                    success=0
-                fi
-            elif command -v curl >/dev/null 2>&1; then
-                echo -e "${GREEN}INFO: Using curl to download the file...${RESET}"
-                curl -o "$TARGET_DIR/$FILE_NAME" -L "$SB_URL"
-                if [ $? -eq 0 ]; then
-                    success=0
-                fi
-            else
-                echo -e "${YELLOW}WARN: Please install wget or curl.${RESET}"
-                break
+            # curl 下载
+         
+            echo -e "${GREEN}INFO: Using curl to download the file...${RESET}"
+            curl -o "$TARGET_DIR/$FILE_NAME" -L "$SB_URL"
+            if [ $? -eq 0 ]; then
+                success=0
             fi
+    
 
             # 检查下载是否成功
             if [ "$success" -eq 0 ]; then
@@ -146,7 +132,7 @@ while true; do
 
 
             ;;
-        3)
+        2)
 
             echo -e "${PURPLE}@@@@@@@@@@@@@@ update config @@@@@@@@@@@@@@@${RESET}"
             echo -e "${CYAN}默认订阅链接: $CONFIG_URL${RESET}"
@@ -165,10 +151,10 @@ while true; do
                 # 检查 url.txt 是否已经有 SB_URL，如果有则替换，否则追加
                 if grep -q '^CONFIG_URL=' $URL; then
                     # 替换已有的 CONFIG_URL
-                    sed -i 's|^CONFIG_URL=.*|CONFIG_URL="'"$config_url"'"|' $URL
+                    sed -i 's|^CONFIG_URL=.*|CONFIG_URL="'"$PROXY/$config_url"'"|' $URL
                 else
                     # 追加新变量到 url.txt
-                    echo "CONFIG_URL=\"$config_url\"" >> $URL
+                    echo "CONFIG_URL=\"$PROXY/$config_url\"" >> $URL
                 fi
                 source $URL
 
@@ -265,11 +251,21 @@ while true; do
             fi
             source $HOME/.bashrc
             ;;
-
-
+        3)  
+            systemctl start sb
+            curl ipinfo.io
+            echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
+            break
+            ;;
+        4)  
+            systemctl stop sb
+            curl ipinfo.io
+            echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
+            break
+            ;;
 
         0)
-            echo -e "${GREEN}INFO: 已退出脚本。${RESET}"
+            echo -e "${GREEN}INFO: Exit sing-box shell successfully.${RESET}"
             break
             ;;
         *)
