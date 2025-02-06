@@ -119,18 +119,15 @@ remove_sb() {
 }
 
 create_main_menu(){
-    echo -e "${PURPLE}+==========================================+${RESET}"
+    echo -e "${PURPLE}+===+======================================+${RESET}"
     echo -e "${PURPLE}+                  $1               +${RESET}"
-    echo -e "${PURPLE}+==========================================+${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
+    echo -e "${PURPLE}+===+======================================+${RESET}"
 }
 create_menu(){
     echo -e "${CYAN}  $1 ${WHITE}|              ${CYAN}$2          ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
 }
-install_tar(){
 
-}
 
 # 一级菜单
 while true; do
