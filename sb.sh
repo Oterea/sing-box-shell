@@ -9,7 +9,7 @@ CYAN='\033[36m'
 WHITE='\033[37m'
 RESET='\033[0m' # 重置颜色
 
-
+proxy="https://github.oterea.top"
 work_dir="$HOME/sing-box"
 share="$work_dir/share.txt"
 source $share
@@ -26,13 +26,97 @@ else
     exit
 fi
 
+install() {
+    # ====================================获取下载链接====================================
+    latest_beta_v=""
+    latest_stable_v=""
+
+    beta_releases_url="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=15"
+    stable_releases_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+    # 获取最新的稳定版本和下载链接
+    stable_releases_data=$(curl -fsSL "$stable_releases_url")
+    latest_stable_v=$(echo "$stable_releases_data" | jq -r '.tag_name')
+    latest_stable_linux_amd64_url=$(echo "$stable_releases_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
+    # 获取最新的测试版本（beta）和下载链接
+    # 循环每页返回 15 个 releases
+    next_url="$beta_releases_url"
+    while [[ -n "$next_url" ]]; do
+        # 获取当前页的 release 数据，并解析 `Link` 头部
+        beta_releases_data=$(curl -fsSL -D headers.txt "$next_url")
+        if [[ $? -ne 0 ]]; then
+            echo "❌ 获取 beta 版本数据失败！"
+            exit 1
+        fi
+        # 提取 beta 版本
+        latest_beta_v=$(echo "$beta_releases_data" | jq -r '.[] | select(.tag_name | test("-beta")) | .tag_name' | head -n 1)
+        # 如果找到了 beta 版本，立刻退出循环
+        if [[ -n "$latest_beta_v" ]]; then
+            break
+        fi
+        # 解析 `Link` 头部，获取下一页的 URL
+        next_url=$(grep -i '^link:' headers.txt | sed -n 's/.*<\(.*\)>; rel="next".*/\1/p')
+        if [[ -z "$next_url" ]]; then
+            echo "❌ 没有找到下一页的链接，停止查询。"
+            break
+        fi
+        # 清理临时文件
+        rm -f headers.txt
+    done
+    # ====================================下载解压====================================
+    file_name=$(basename "$latest_stable_linux_amd64_url")
+    success=1
+    # curl 下载
+    
+    echo -e "${GREEN}INFO: Using curl to download sing-box...${RESET}"
+    curl --progress-bar -o "$work_dir/$file_name" -L "$proxy/$latest_stable_linux_amd64_url"
+    if [ $? -eq 0 ]; then
+        success=0
+    fi
+
+
+    # 检查下载是否成功
+    if [ "$success" -eq 0 ]; then
+        echo -e "${GREEN}INFO: sing-box downloaded successfully to $work_dir/$file_name${RESET}"
+    else
+        echo -e "${RED}ERROE: File download failed.${RESET}"
+        rm $work_dir/$file_name
+        break
+    fi
+
+    # 检查解压工具 tar 是否安装，如果没有则自动安装
+    if ! command -v tar >/dev/null 2>&1; then
+        echo -e "${YELLOW}WARN: tar is not installed. Installing tar...${RESET}"
+        sudo apt update && sudo apt install -y tar
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}ERROR: Failed to install tar. Exiting...${RESET}"
+            break
+        fi
+    fi
+
+    # 解压并提取内容到目标目录
+    tar --strip-components=1 -xzf "$work_dir/$file_name" -C "$work_dir"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}INFO: ${file_name} extracted successfully to $work_dir${RESET}"
+    else
+        echo -e "${RED}ERROR: Failed to extract sing-box.${RESET}"
+        break
+    fi
+    # 删除源文件
+    rm "$work_dir/$file_name"
+
+    # 提取版本信息
+    version_data=$($work_dir/sing-box version)
+    version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
+    version_info="sing-box-$version"
+}
+
 
 install_sb() {
     echo -e "${PURPLE}+==========================================+${RESET}"
     echo -e "${PURPLE}              Updating sing-box             ${RESET}"
 
     echo -e "${CYAN}默认下载链接: $sb_url${RESET}"
-    echo -e "${CYAN}是否使用默认下载链接([Y]/n): ${RESET}"
+    echo -e "${CYAN}是否使用默认下载链接? [Y/n]: ${RESET}"
     read sub_choice
     sub_choice=${sub_choice:-y}
 
@@ -151,16 +235,16 @@ while true; do
     case $choice in
 
         1)
-            install_sb
+            install
             ;;
         2)
-            install_sb
+            install
             ;;
         3)
             echo -e "${PURPLE}============================================${RESET}"
             echo -e "${PURPLE}              Updating config             ${RESET}"
             echo -e "${CYAN}默认订阅链接: $config_url${RESET}"
-            echo -e "${CYAN}是否使用默认订阅链接([Y]/n): ${RESET}"
+            echo -e "${CYAN}是否使用默认订阅链接? [Y/n]: ${RESET}"
             read sub_choice
             sub_choice=${sub_choice:-y}
 
