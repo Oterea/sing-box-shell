@@ -128,6 +128,9 @@ create_menu(){
     echo -e "${CYAN}  $1 ${WHITE}|              ${CYAN}$2          ${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
 }
+install_tar(){
+
+}
 
 # 一级菜单
 while true; do
@@ -152,9 +155,11 @@ while true; do
 
         1)
             install_sb
-
             ;;
         2)
+            install_sb
+            ;;
+        3)
             echo -e "${PURPLE}============================================${RESET}"
             echo -e "${PURPLE}              Updating config             ${RESET}"
             echo -e "${CYAN}默认订阅链接: $config_url${RESET}"
@@ -230,19 +235,19 @@ while true; do
 
 
             ;;
-        3)  
+        4)  
             sudo systemctl start sb
             curl ipinfo.io
             echo
             echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
             ;;
-        4)  
+        5)  
             sudo systemctl stop sb
             curl ipinfo.io
             echo
             echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
             ;;
-        5)  
+        6)  
             remove_sb
             break
             ;;
