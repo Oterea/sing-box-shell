@@ -26,8 +26,8 @@ else
     exit
 fi
 
-install() {
-    # ====================================获取下载链接====================================
+get_latest_version() {
+    # ====================================获取最新版本下载链接====================================
     latest_beta_v=""
     latest_stable_v=""
 
@@ -51,6 +51,7 @@ install() {
         latest_beta_v=$(echo "$beta_releases_data" | jq -r '.[] | select(.tag_name | test("-beta")) | .tag_name' | head -n 1)
         # 如果找到了 beta 版本，立刻退出循环
         if [[ -n "$latest_beta_v" ]]; then
+            latest_beta_linux_amd64_url=$(echo "$beta_releases_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
             break
         fi
         # 解析 `Link` 头部，获取下一页的 URL
@@ -62,6 +63,19 @@ install() {
         # 清理临时文件
         rm -f headers.txt
     done
+
+
+}
+
+check_version() {
+    get_latest_version
+    echo "🚀 最新稳定版本: $latest_stable_v"
+    echo "🚀 最新测试版本: $latest_beta_v"
+}
+
+
+install() {
+    
     # ====================================下载解压====================================
     file_name=$(basename "$latest_stable_linux_amd64_url")
     success=1
@@ -103,95 +117,40 @@ install() {
     fi
     # 删除源文件
     rm "$work_dir/$file_name"
-
-    # 提取版本信息
-    version_data=$($work_dir/sing-box version)
-    version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
-    version_info="sing-box-$version"
-}
-
-
-install_sb() {
-    echo -e "${PURPLE}+==========================================+${RESET}"
-    echo -e "${PURPLE}              Updating sing-box             ${RESET}"
-
-    echo -e "${CYAN}默认下载链接: $sb_url${RESET}"
-    echo -e "${CYAN}是否使用默认下载链接? [Y/n]: ${RESET}"
-    read sub_choice
-    sub_choice=${sub_choice:-y}
-
-    # 转换为小写并使用 if 语句判断
-    if [[ "${sub_choice,,}" == "y" ]]; then
-        :
-        # 在这里执行使用默认链接的操作
-    elif [[ "${sub_choice,,}" == "n" ]]; then
-        # 在这里执行不使用默认链接的操作
-        echo -e "${CYAN}请输入 sing-box 下载链接: ${RESET}"
-        read sb_url_temp
-        # 检查 share.txt 是否已经有 sb_url，如果有则替换，否则追加
-        if grep -q '^sb_url=' $share; then
-            # 替换已有的 sb_url
-            sed -i 's|^sb_url=.*|sb_url="'"$proxy/$sb_url_temp"'"|' $share
-        else
-            # 追加新变量到 url.txt
-            echo "sb_url=\"$proxy/$sb_url_temp\"" >> $share
-        fi
-
-    else
-        echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
-    fi
-
-    source $share
-    file_name=$(basename "$sb_url")
-
-    success=1
-    # curl 下载
-    
-    echo -e "${GREEN}INFO: Using curl to download sing-box...${RESET}"
-    curl --progress-bar -o "$work_dir/$file_name" -L "$sb_url"
-    if [ $? -eq 0 ]; then
-        success=0
-    fi
-
-
-    # 检查下载是否成功
-    if [ "$success" -eq 0 ]; then
-        echo -e "${GREEN}INFO: sing-box downloaded successfully to $work_dir/$file_name${RESET}"
-    else
-        echo -e "${RED}ERROE: File download failed.${RESET}"
-        rm $work_dir/$file_name
-        break
-    fi
-
-    # 检查解压工具 tar 是否安装，如果没有则自动安装
-    if ! command -v tar >/dev/null 2>&1; then
-        echo -e "${YELLOW}WARN: tar is not installed. Installing tar...${RESET}"
-        sudo apt update && sudo apt install -y tar
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}ERROR: Failed to install tar. Exiting...${RESET}"
-            break
-        fi
-    fi
-
-    # 解压并提取内容到目标目录
-    tar --strip-components=1 -xzf "$work_dir/$file_name" -C "$work_dir"
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}INFO: ${file_name} extracted successfully to $work_dir${RESET}"
-    else
-        echo -e "${RED}ERROR: Failed to extract sing-box.${RESET}"
-        break
-    fi
-    # 删除源文件
-    rm "$work_dir/$file_name"
-
+    # ====================================设置sb.service==================================== 
     # 提取版本信息
     version_data=$($work_dir/sing-box version)
     version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
     version_info="sing-box-$version"
 
+         
+    # 检查sb.service 文件是否存在，若存在则覆盖
+    if [ -f "$service" ]; then
+        echo -e "${YELLOW}WARN: The file $service already exists. It will be overwritten.${RESET}"
+    fi
 
+    # 创建 sb.service 文件并写入内容，直接覆盖内容
+    echo "[Unit]
+    Description=$version_info
+    After=network.target
 
-    echo "Hello from my function!"
+    [Service]
+    ExecStart=$work_dir/sing-box run
+    WorkingDirectory=$work_dir/
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target" | sudo tee "$service" > /dev/null
+
+    # 检查文件是否创建并覆盖成功
+    if [ -f "$service" ]; then
+        echo -e "${GREEN}INFO: Service file created successfully at $service${RESET}"
+        # 重新加载 systemd 配置
+        sudo systemctl daemon-reload
+    else
+        echo -e "${RED}ERROR: Failed to create sb.service file.${RESET}"
+        break
+    fi
 }
 
 remove_sb() {
@@ -213,13 +172,14 @@ create_menu(){
 }
 
 
+check_version
+
 # 一级菜单
 while true; do
 
   
     create_main_menu "Main menu"
     create_menu 1 "Install sing-box"
-    create_menu 2 "Update sing-box"
     create_menu 3 "Update config"
     create_menu 4 "Start sing-box"
     create_menu 5 "Stop sing-box"
@@ -235,9 +195,6 @@ while true; do
     case $choice in
 
         1)
-            install
-            ;;
-        2)
             install
             ;;
         3)
@@ -283,36 +240,7 @@ while true; do
                 echo -e "${RED}ERROR: Failed to save config${RESET}"
                 break
             fi
-
-            # 设置 sb.service 文件路径
-         
-            # 检查文件是否存在，若存在则覆盖
-            if [ -f "$service" ]; then
-                echo -e "${YELLOW}WARN: The file $service already exists. It will be overwritten.${RESET}"
-            fi
-
-            # 创建 sb.service 文件并写入内容，直接覆盖内容
-            echo "[Unit]
-            Description=$version_info
-            After=network.target
-
-            [Service]
-            ExecStart=$work_dir/sing-box run
-            WorkingDirectory=$work_dir/
-            Restart=always
-
-            [Install]
-            WantedBy=multi-user.target" | sudo tee "$service" > /dev/null
-
-            # 检查文件是否创建并覆盖成功
-            if [ -f "$service" ]; then
-                echo -e "${GREEN}INFO: Service file created successfully at $service${RESET}"
-                # 重新加载 systemd 配置
-                sudo systemctl daemon-reload
-            else
-                echo -e "${RED}ERROR: Failed to create sb.service file.${RESET}"
-                break
-            fi
+  
 
 
             ;;
