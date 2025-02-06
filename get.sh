@@ -8,7 +8,7 @@ remove_sb() {
     echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
 }
 remove_sb
-curl -L -o sb.sh https://github.oterea.top/https://raw.githubusercontent.com/Oterea/sing-box-shell/main/sb.sh
+curl -L -o sb.sh https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
 sudo chmod +x sb.sh
 
 
