@@ -34,7 +34,7 @@ echo "exec=$exec" >> "$share"
 echo "service=$service" >> "$share"
 
 
-curl --progress-bar -o sb.sh -L https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
+curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
 sudo chmod +x sb.sh
 
 sudo mv -f sb.sh /usr/local/bin/sb
