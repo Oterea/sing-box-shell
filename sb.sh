@@ -125,7 +125,7 @@ create_menu(){
 while true; do
 
   
-    create_main_menu "Main menu"
+    create_main_menu "Main menu test"
     create_menu 1 "Install sing-box"
     create_menu 2 "Update sing-box"
     create_menu 3 "Update config"
