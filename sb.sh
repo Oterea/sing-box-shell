@@ -134,6 +134,7 @@ while true; do
     # 提示用户输入
     echo -e "${CYAN}请输入对应序号: ${RESET}"
     read -n 1 choice
+    echo
 
     case $choice in
 
