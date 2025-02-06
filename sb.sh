@@ -158,10 +158,10 @@ while true; do
                 # 检查 url.txt 是否已经有 SB_URL，如果有则替换，否则追加
                 if grep -q '^CONFIG_URL=' $URL; then
                     # 替换已有的 CONFIG_URL
-                    sed -i 's|^CONFIG_URL=.*|CONFIG_URL="'"$PROXY/$config_url"'"|' $URL
+                    sed -i 's|^CONFIG_URL=.*|CONFIG_URL="'"$config_url"'"|' $URL
                 else
                     # 追加新变量到 url.txt
-                    echo "CONFIG_URL=\"$PROXY/$config_url\"" >> $URL
+                    echo "CONFIG_URL=\"$config_url\"" >> $URL
                 fi
                 source $URL
 
