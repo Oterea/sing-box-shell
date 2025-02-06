@@ -64,7 +64,7 @@ install_sb() {
     # curl 下载
     
     echo -e "${GREEN}INFO: Using curl to download sing-box...${RESET}"
-    curl -o "$work_dir/$file_name" -L "$sb_url"
+    curl --progress-bar -o "$work_dir/$file_name" -L "$sb_url"
     if [ $? -eq 0 ]; then
         success=0
     fi
@@ -187,9 +187,9 @@ while true; do
             fi
 
 
-            # 检查是否安装 curl
+            #  curl 安装 
             echo -e "${GREEN}INFO: Using curl to fetch the config.json...${RESET}"
-            curl -s "$config_url" -o "$config_file"  # 直接覆盖目标文件
+            curl --progress-bar -o "$config_file" -L "$config_url" # 直接覆盖目标文件
             
 
             # 检查写入是否成功
