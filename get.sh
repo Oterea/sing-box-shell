@@ -1,9 +1,9 @@
 GREEN='\033[32m'
 RESET='\033[0m' # 重置颜色
 remove_sb() {
-    sudo rm -r $EXTRACT_DIR
-    sudo rm /etc/systemd/system/sb.service
-    sudo rm /usr/local/bin/sb
+    sudo rm -rf $EXTRACT_DIR
+    sudo rm -f /etc/systemd/system/sb.service
+    sudo rm -f /usr/local/bin/sb
     echo
     echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
 }
