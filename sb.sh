@@ -109,6 +109,15 @@ install_sb() {
 
     echo "Hello from my function!"
 }
+
+remove_sb() {
+    sudo rm -rf $work_dir
+    sudo rm -f $service
+    sudo rm -f $exec
+    echo
+    echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
+}
+
 create_main_menu(){
     echo -e "${PURPLE}+==========================================+${RESET}"
     echo -e "${PURPLE}+                  $1               +${RESET}"
@@ -234,11 +243,7 @@ while true; do
             echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
             ;;
         5)  
-            sudo rm -r $work_dir
-            sudo rm $service
-            sudo rm $exec
-            echo
-            echo -e "${GREEN}INFO: sing-box removed successfully.${RESET}"
+            remove_sb
             break
             ;;
 

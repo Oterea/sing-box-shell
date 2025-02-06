@@ -12,6 +12,15 @@ share="$work_dir/share.txt"
 exec="/usr/local/bin/sb"
 service="/etc/systemd/system/sb.service"
 
+# 删除旧的 sing-box
+remove_sb() {
+    sudo rm -rf $work_dir
+    sudo rm -f $service
+    sudo rm -f $exec
+    echo
+    echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
+}
+remove_sb
 
 # 创建目标目录（如果不存在）
 if [ ! -d "$work_dir" ]; then
@@ -23,15 +32,7 @@ echo "sb_url=$proxy/$sb_url" >> "$share"
 echo "config_url=$config_url" >> "$share"
 echo "exec=$exec" >> "$share"
 echo "service=$service" >> "$share"
-# 删除旧的 sing-box
-remove_sb() {
-    sudo rm -rf $work_dir
-    sudo rm -f $service
-    sudo rm -f $exec
-    echo
-    echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
-}
-remove_sb
+
 
 curl -L -o sb.sh https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
 sudo chmod +x sb.sh
