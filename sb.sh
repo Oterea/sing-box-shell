@@ -9,16 +9,14 @@ CYAN='\033[36m'
 WHITE='\033[37m'
 RESET='\033[0m' # 重置颜色
 
-TARGET_DIR="$HOME"
-EXTRACT_DIR="$HOME/sing-box"  # 提取内容到的目标目录
-# 创建目标目录（如果不存在）
-if [ ! -d "$EXTRACT_DIR" ]; then
-    mkdir -p "$EXTRACT_DIR"
-fi
 
-URL=$EXTRACT_DIR/url.txt
-source $URL
-CONFIG_FILE="$EXTRACT_DIR/config.json"  # 保存为 config.json 文件
+work_dir="$HOME/sing-box"
+share="$work_dir/share.txt"
+source share
+
+
+
+config_file="$work_dir/config.json"  # 保存为 config.json 文件
 
 # 检查curl下载工具
 if command -v curl >/dev/null 2>&1; then
@@ -33,7 +31,7 @@ install_sb() {
     echo -e "${PURPLE}+==========================================+${RESET}"
     echo -e "${PURPLE}              Updating sing-box             ${RESET}"
 
-    echo -e "${CYAN}默认下载链接: $SB_URL${RESET}"
+    echo -e "${CYAN}默认下载链接: $sb_url${RESET}"
     echo -e "${CYAN}是否使用默认下载链接([Y]/n): ${RESET}"
     read sub_choice
     sub_choice=${sub_choice:-y}
@@ -45,28 +43,28 @@ install_sb() {
     elif [[ "${sub_choice,,}" == "n" ]]; then
         # 在这里执行不使用默认链接的操作
         echo -e "${CYAN}请输入 sing-box 下载链接: ${RESET}"
-        read sb_url
-        # 检查 url.txt 是否已经有 SB_URL，如果有则替换，否则追加
-        if grep -q '^SB_URL=' $URL; then
-            # 替换已有的 SB_URL
-            sed -i 's|^SB_URL=.*|SB_URL="'"$PROXY/$sb_url"'"|' $URL
+        read sb_url_temp
+        # 检查 share.txt 是否已经有 sb_url，如果有则替换，否则追加
+        if grep -q '^sb_url=' $share; then
+            # 替换已有的 sb_url
+            sed -i 's|^sb_url=.*|sb_url="'"$proxy/$sb_url_temp"'"|' $share
         else
             # 追加新变量到 url.txt
-            echo "SB_URL=\"$PROXY/$sb_url\"" >> $URL
+            echo "sb_url=\"$proxy/$sb_url_temp\"" >> $share
         fi
 
     else
         echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
     fi
 
-    source $URL
-    FILE_NAME=$(basename "$SB_URL")
+    source $share
+    file_name=$(basename "$sb_url")
 
     success=1
     # curl 下载
     
-    echo -e "${GREEN}INFO: Using curl to download the file...${RESET}"
-    curl -o "$TARGET_DIR/$FILE_NAME" -L "$SB_URL"
+    echo -e "${GREEN}INFO: Using curl to download sing-box...${RESET}"
+    curl -o "$work_dir/$file_name" -L "$sb_url"
     if [ $? -eq 0 ]; then
         success=0
     fi
@@ -74,10 +72,10 @@ install_sb() {
 
     # 检查下载是否成功
     if [ "$success" -eq 0 ]; then
-        echo -e "${GREEN}INFO: sing-box downloaded successfully to $TARGET_DIR/$FILE_NAME${RESET}"
+        echo -e "${GREEN}INFO: sing-box downloaded successfully to $work_dir/$file_name${RESET}"
     else
         echo -e "${RED}ERROE: File download failed.${RESET}"
-        rm $TARGET_DIR/$FILE_NAME
+        rm $work_dir/$file_name
         break
     fi
 
@@ -92,20 +90,20 @@ install_sb() {
     fi
 
     # 解压并提取内容到目标目录
-    tar --strip-components=1 -xzf "$TARGET_DIR/$FILE_NAME" -C "$EXTRACT_DIR"
+    tar --strip-components=1 -xzf "$work_dir/$file_name" -C "$work_dir"
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}INFO: ${FILE_NAME} extracted successfully to $EXTRACT_DIR${RESET}"
+        echo -e "${GREEN}INFO: ${file_name} extracted successfully to $work_dir${RESET}"
     else
         echo -e "${RED}ERROR: Failed to extract sing-box.${RESET}"
         break
     fi
     # 删除源文件
-    rm "$TARGET_DIR/$FILE_NAME"
+    rm "$work_dir/$file_name"
 
     # 提取版本信息
-    VERSION_DATA=$($EXTRACT_DIR/sing-box version)
-    VERSION=$(echo "$VERSION_DATA" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
-    VERSION_INFO="sing-box-$VERSION"
+    version_data=$($work_dir/sing-box version)
+    version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
+    version_info="sing-box-$version"
 
 
 
@@ -114,6 +112,7 @@ install_sb() {
 create_main_menu(){
     echo -e "${PURPLE}+==========================================+${RESET}"
     echo -e "${PURPLE}+                  $1               +${RESET}"
+    echo -e "${PURPLE}+==========================================+${RESET}"
     echo -e "${WHITE}+---+--------------------------------------+${RESET}"
 }
 create_menu(){
@@ -149,7 +148,7 @@ while true; do
         2)
             echo -e "${PURPLE}============================================${RESET}"
             echo -e "${PURPLE}              Updating config             ${RESET}"
-            echo -e "${CYAN}默认订阅链接: $CONFIG_URL${RESET}"
+            echo -e "${CYAN}默认订阅链接: $config_url${RESET}"
             echo -e "${CYAN}是否使用默认订阅链接([Y]/n): ${RESET}"
             read sub_choice
             sub_choice=${sub_choice:-y}
@@ -161,29 +160,29 @@ while true; do
             elif [[ "${sub_choice,,}" == "n" ]]; then
                 # 在这里执行不使用默认链接的操作
                 echo -e "${CYAN}请输入 config 下载链接: ${RESET}"
-                read config_url
-                # 检查 url.txt 是否已经有 SB_URL，如果有则替换，否则追加
-                if grep -q '^CONFIG_URL=' $URL; then
-                    # 替换已有的 CONFIG_URL
-                    sed -i 's|^CONFIG_URL=.*|CONFIG_URL="'"$config_url"'"|' $URL
+                read config_url_temp
+                # 检查 share.txt 是否已经有 config_url
+                if grep -q '^config_url=' $share; then
+                    # 替换已有的 config_url
+                    sed -i 's|^config_url=.*|config_url="'"$config_url_temp"'"|' $share
                 else
                     # 追加新变量到 url.txt
-                    echo "CONFIG_URL=\"$config_url\"" >> $URL
+                    echo "config_url=\"$config_url_temp\"" >> $share
                 fi
-                source $URL
+                source $share
 
             else
                 echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
             fi
 
 
-            # 检查是否安装 curl 或 wget
+            # 检查是否安装 curl
             echo -e "${GREEN}INFO: Using curl to fetch the config.json...${RESET}"
-            curl -s "$CONFIG_URL" -o "$CONFIG_FILE"  # 直接覆盖目标文件
+            curl -s "$config_url" -o "$config_file"  # 直接覆盖目标文件
             
 
             # 检查写入是否成功
-            if [ -f "$CONFIG_FILE" ]; then
+            if [ -f "$config_file" ]; then
                 echo -e "${GREEN}INFO: config updating successfully${RESET}"
             else
                 echo -e "${RED}ERROR: Failed to save config${RESET}"
@@ -191,29 +190,28 @@ while true; do
             fi
 
             # 设置 sb.service 文件路径
-            #
-            SERVICE_FILE="/etc/systemd/system/sb.service"
+         
             # 检查文件是否存在，若存在则覆盖
-            if [ -f "$SERVICE_FILE" ]; then
-                echo -e "${YELLOW}WARN: The file $SERVICE_FILE already exists. It will be overwritten.${RESET}"
+            if [ -f "$service" ]; then
+                echo -e "${YELLOW}WARN: The file $service already exists. It will be overwritten.${RESET}"
             fi
 
             # 创建 sb.service 文件并写入内容，直接覆盖内容
             echo "[Unit]
-            Description=$VERSION_INFO
+            Description=$version_info
             After=network.target
 
             [Service]
-            ExecStart=$EXTRACT_DIR/sing-box run
-            WorkingDirectory=$EXTRACT_DIR/
+            ExecStart=$work_dir/sing-box run
+            WorkingDirectory=$work_dir/
             Restart=always
 
             [Install]
-            WantedBy=multi-user.target" | sudo tee "$SERVICE_FILE" > /dev/null
+            WantedBy=multi-user.target" | sudo tee "$service" > /dev/null
 
             # 检查文件是否创建并覆盖成功
-            if [ -f "$SERVICE_FILE" ]; then
-                echo -e "${GREEN}INFO: Service file created successfully at $SERVICE_FILE${RESET}"
+            if [ -f "$service" ]; then
+                echo -e "${GREEN}INFO: Service file created successfully at $service${RESET}"
                 # 重新加载 systemd 配置
                 sudo systemctl daemon-reload
             else
@@ -236,9 +234,9 @@ while true; do
             echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
             ;;
         5)  
-            sudo rm -r $EXTRACT_DIR
-            sudo rm /etc/systemd/system/sb.service
-            sudo rm /usr/local/bin/sb
+            sudo rm -r $work_dir
+            sudo rm $service
+            sudo rm $exec
             echo
             echo -e "${GREEN}INFO: sing-box removed successfully.${RESET}"
             break
