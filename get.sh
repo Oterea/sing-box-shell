@@ -31,5 +31,4 @@ echo "PROXY=$proxy" > "$URL"
 echo "SB_URL=$proxy/$sb_url" >> "$URL"
 echo "CONFIG_URL=$config_url" >> "$URL"
 
-sb
-1
+

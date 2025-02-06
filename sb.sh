@@ -30,7 +30,7 @@ fi
 
 
 install_sb() {
-    echo -e "${PURPLE}============================================${RESET}"
+    echo -e "${PURPLE}+==========================================+${RESET}"
     echo -e "${PURPLE}              Updating sing-box             ${RESET}"
 
     echo -e "${CYAN}默认下载链接: $SB_URL${RESET}"
@@ -111,25 +111,29 @@ install_sb() {
 
     echo "Hello from my function!"
 }
+create_main_menu(){
+    echo -e "${PURPLE}+==========================================+${RESET}"
+    echo -e "${PURPLE}+                  $1               +${RESET}"
+    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
+}
+create_menu(){
+    echo -e "${CYAN}  $1 ${WHITE}|              ${CYAN}$2          ${RESET}"
+    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
+}
 
 # 一级菜单
 while true; do
 
-    echo -e "${PURPLE}+==========================================+${RESET}"
-    echo -e "${PURPLE}+                  Main menu               +${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  1 ${WHITE}|              ${CYAN}Install sing-box          ${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  2 ${WHITE}|              ${CYAN}Update sing-box          ${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  3 ${WHITE}|              ${CYAN}Update config            ${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  4 ${WHITE}|              ${CYAN}Start sing-box           ${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  5 ${WHITE}|              ${CYAN}Stop sing-box           ${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
-    echo -e "${CYAN}  0 ${WHITE}|              ${CYAN}Exit shell               ${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
+  
+    create_main_menu "Main menu"
+    create_menu 1 "Install sing-box"
+    create_menu 2 "Update sing-box"
+    create_menu 3 "Update config"
+    create_menu 4 "Start sing-box"
+    create_menu 5 "Stop sing-box"
+    create_menu 6 "Remove sing-box"
+    create_menu 0 "Exit shell"
+
 
     # 提示用户输入
     echo -e "${CYAN}请输入对应序号: ${RESET}"
