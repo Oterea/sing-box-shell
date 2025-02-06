@@ -12,7 +12,7 @@ RESET='\033[0m' # 重置颜色
 
 work_dir="$HOME/sing-box"
 share="$work_dir/share.txt"
-source share
+source $share
 
 
 
