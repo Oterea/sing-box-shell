@@ -70,13 +70,18 @@ get_latest_version() {
 
 
 }
+check_installed_version() {
+    if [ -e "$work_dir/sing-box" ]; then
+        
+        # 提取版本信息
+        version_data=$($work_dir/sing-box version)
+        version="v$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')"
+        
+    else
+        echo -e "❌${YELLOW}WARN: sing-box is not installed.${RESET}"
+    fi
 
-check_version() {
-    get_latest_version
-    echo "✅ 最新稳定版本: $latest_stable_v"
-    echo "🚀 最新稳定版本URL: $latest_stable_linux_amd64_url"
-    echo "🚀 最新测试版本: $latest_beta_v"
-    echo "🚀 最新测试版本URL: $latest_beta_linux_amd64_url"
+    
 }
 
 
@@ -88,14 +93,14 @@ install() {
 
     # 转换为小写并使用 if 语句判断
     if [[ "${is_stable,,}" == "y" ]]; then
-        echo -e "${CYAN}downloading stable version ${RESET}"
+        echo -e "${GREEN}INFO: downloading stable version. ${RESET}"
         download_url=$latest_stable_linux_amd64_url
     elif [[ "${is_stable,,}" == "n" ]]; then
-        echo -e "${CYAN}downloading beta version ${RESET}"
+        echo -e "${GREEN}INFO: downloading beta version. ${RESET}"
         download_url=$latest_beta_linux_amd64_url
 
     else
-        echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
+        echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
     fi
     
     # ====================================下载解压====================================
@@ -112,7 +117,7 @@ install() {
 
     # 检查下载是否成功
     if [ "$success" -eq 0 ]; then
-        echo -e "${GREEN}INFO: sing-box downloaded successfully to $work_dir/$file_name${RESET}"
+        echo -e "${GREEN}INFO: sing-box downloaded successfully to $work_dir/$file_name.${RESET}"
     else
         echo -e "${RED}ERROE: File download failed.${RESET}"
         rm $work_dir/$file_name
@@ -132,7 +137,7 @@ install() {
     # 解压并提取内容到目标目录
     tar --strip-components=1 -xzf "$work_dir/$file_name" -C "$work_dir"
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}INFO: ${file_name} extracted successfully to $work_dir${RESET}"
+        echo -e "${GREEN}INFO: ${file_name} extracted successfully to $work_dir.${RESET}"
     else
         echo -e "${RED}ERROR: Failed to extract sing-box.${RESET}"
         break
@@ -141,16 +146,11 @@ install() {
     rm "$work_dir/$file_name"
     # ====================================设置sb.service==================================== 
     # 提取版本信息
-    version_data=$($work_dir/sing-box version)
-    # version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
-    # version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')
-    version="v$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')"
-
-
-         
+    check_installed_version
+  
     # 检查sb.service 文件是否存在，若存在则覆盖
     if [ -f "$service" ]; then
-        echo -e "${YELLOW}WARN: The file $service already exists. It will be overwritten.${RESET}"
+        echo -e "${YELLOW}INFO: The file $service already exists. It will be overwritten.${RESET}"
     fi
 
     # 创建 sb.service 文件并写入内容，直接覆盖内容
@@ -168,7 +168,7 @@ install() {
 
     # 检查文件是否创建并覆盖成功
     if [ -f "$service" ]; then
-        echo -e "${GREEN}INFO: Service file created successfully at $service${RESET}"
+        echo -e "${GREEN}INFO: Service file created successfully at $service.${RESET}"
         # 重新加载 systemd 配置
         sudo systemctl daemon-reload
     else
@@ -196,7 +196,6 @@ create_menu(){
 }
 
 
-check_version
 
 # 一级菜单
 while true; do
@@ -204,7 +203,7 @@ while true; do
   
     create_main_menu "Main menu"
     create_menu 1 "Install sing-box"
-    create_menu 1 "Update sing-box"
+    create_menu 2 "Update sing-box"
     create_menu 3 "Update config"
     create_menu 4 "Start sing-box"
     create_menu 5 "Stop sing-box"
@@ -213,24 +212,26 @@ while true; do
 
 
     # 提示用户输入
-    echo -e "${CYAN}请输入对应序号: ${RESET}"
+    echo -e "${CYAN}Please enter the number: ${RESET}"
     read -n 1 choice
     echo
 
     case $choice in
 
         1)  
-            echo -e "${CYAN}Fetching version data...... $config_url${RESET}"
+            echo -e "${GREEN}INFO: fetching version data...... $config_url.${RESET}"
             get_latest_version
             echo "✅ Latest stable version: $latest_stable_v"
             echo "🚀 Latest beta version: $latest_beta_v"
             install
             ;;
         2)  
-            echo -e "${CYAN}Fetching version data...... $config_url${RESET}"
+            echo -e "${GREEN}INFO: fetching version data...... $config_url${RESET}"
             get_latest_version
-            echo "✅ Latest stable version: $latest_stable_v"
-            echo "🚀 Latest beta version: $latest_beta_v"
+            check_installed_version
+            echo -e "${GREEN}INFO: $version."
+            echo -e "✅ ${GREEN}INFO: latest stable version: $latest_stable_v.${RESET}"
+            echo -e "🚀 ${GREEN}INFO: latest beta version: $latest_beta_v.${RESET}"
             install
             ;;
         3)
