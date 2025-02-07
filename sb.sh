@@ -183,7 +183,7 @@ remove_sb() {
     sudo rm -f $service
     sudo rm -f $exec
     echo
-    echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
+    echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
 }
 
 create_main_menu(){
