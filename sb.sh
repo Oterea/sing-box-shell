@@ -67,7 +67,8 @@ get_latest_version() {
         # 清理临时文件
         rm -f headers.txt
     done
-
+    echo -e "${GREEN}INFO: latest stable version ✅: $latest_stable_v.${RESET}"
+    echo -e "${GREEN}INFO: latest beta version 🚀: $latest_beta_v.${RESET}"
 
 }
 check_installed_version() {
@@ -221,17 +222,12 @@ while true; do
         1)  
             echo -e "${GREEN}INFO: fetching version data...... $config_url.${RESET}"
             get_latest_version
-            echo "✅ Latest stable version: $latest_stable_v"
-            echo "🚀 Latest beta version: $latest_beta_v"
             install
             ;;
         2)  
             echo -e "${GREEN}INFO: fetching version data...... $config_url${RESET}"
             get_latest_version
             check_installed_version
-            
-            echo -e "${GREEN}INFO: latest stable version ✅: $latest_stable_v.${RESET}"
-            echo -e "${GREEN}INFO: latest beta version 🚀: $latest_beta_v.${RESET}"
             install
             ;;
         3)
