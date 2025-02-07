@@ -43,6 +43,7 @@ get_latest_version() {
     while [[ -n "$next_url" ]]; do
         # 获取当前页的 release 数据，并解析 `Link` 头部
         beta_releases_data=$(curl -fsSL -D headers.txt "$next_url")
+        echo $beta_releases_data
         if [[ $? -ne 0 ]]; then
             echo "❌ 获取 beta 版本数据失败！"
             exit 1
