@@ -20,13 +20,6 @@ source $share
 
 config_file="$work_dir/config.json"  # 保存为 config.json 文件
 
-# 检查curl下载工具
-if command -v curl >/dev/null 2>&1; then
-    echo -e "${GREEN}curl 已安装${RESET}"
-else
-    echo -e "${YELLOW}curl 未安装${RESET}"
-    exit
-fi
 
 
 get_latest_version() {
@@ -323,7 +316,7 @@ while true; do
             ;;
         5)  
             # 检查 sing-box 和 config
-            check_config
+            # check_config
             sudo systemctl stop sb
             curl ipinfo.io
             echo
