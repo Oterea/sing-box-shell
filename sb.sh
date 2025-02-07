@@ -27,6 +27,9 @@ else
     echo -e "${YELLOW}curl 未安装${RESET}"
     exit
 fi
+echo -e "${GREEN}INFO: installing jq${RESET}"
+sudo apt install -y -qq jq >/dev/null 2>&1
+
 
 get_latest_version() {
     # ====================================获取最新版本下载链接====================================

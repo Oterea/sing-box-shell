@@ -16,7 +16,7 @@ remove_sb() {
     sudo rm -rf $work_dir
     sudo rm -f $service
     sudo rm -f $exec
-    echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
+    echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
 }
 remove_sb
 
