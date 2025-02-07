@@ -51,6 +51,7 @@ get_latest_version() {
         latest_beta_v=$(echo "$beta_releases_data" | jq -r '.[] | select(.tag_name | test("-beta")) | .tag_name' | head -n 1)
         # 如果找到了 beta 版本，立刻退出循环
         if [[ -n "$latest_beta_v" ]]; then
+            # TODO===============assets修改
             latest_beta_linux_amd64_url=$(echo "$beta_releases_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
             break
         fi
@@ -75,14 +76,30 @@ check_version() {
 
 
 install() {
+    # 提示用户输入
+    echo -e "${CYAN}Install stable? [Y/n]: ${RESET}"
+    read -n 1 is_stable
+    is_stable=${is_stable:-y}
+
+    # 转换为小写并使用 if 语句判断
+    if [[ "${is_stable,,}" == "y" ]]; then
+        echo -e "${CYAN}downloading stable version ${RESET}"
+        download_url=$latest_stable_linux_amd64_url
+    elif [[ "${is_stable,,}" == "n" ]]; then
+        echo -e "${CYAN}downloading beta version ${RESET}"
+        download_url=$latest_beta_linux_amd64_url
+
+    else
+        echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
+    fi
     
     # ====================================下载解压====================================
-    file_name=$(basename "$latest_stable_linux_amd64_url")
+    file_name=$(basename "$download_url")
     success=1
     # curl 下载
     
     echo -e "${GREEN}INFO: Using curl to download sing-box...${RESET}"
-    curl --progress-bar -o "$work_dir/$file_name" -L "$proxy/$latest_stable_linux_amd64_url"
+    curl --progress-bar -o "$work_dir/$file_name" -L "$proxy/$download_url"
     if [ $? -eq 0 ]; then
         success=0
     fi
@@ -240,8 +257,6 @@ while true; do
                 echo -e "${RED}ERROR: Failed to save config${RESET}"
                 break
             fi
-  
-
 
             ;;
         4)  
