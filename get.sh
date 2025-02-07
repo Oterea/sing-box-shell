@@ -2,7 +2,8 @@ GREEN='\033[32m'
 RESET='\033[0m' # 重置颜色
 
 # 定义变量
-
+service="/etc/systemd/system/sb.service"
+exec="/usr/local/bin/sb"
 config_url=""
     # 定义工作文件夹
 work_dir="$HOME/sing-box"
@@ -35,7 +36,7 @@ curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
 sudo chmod +x sb.sh
 
 sudo mv -f sb.sh /usr/local/bin/sb
-echo -e "${GREEN}INFO: Sbshell installed successfully.${RESET}"
+echo -e "${GREEN}INFO: sing-box-shell installed successfully.${RESET}"
 
 
 

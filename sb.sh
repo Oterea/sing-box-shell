@@ -185,7 +185,7 @@ check_config() {
     if [ -e "$work_dir/sing-box" ]; then
         if [ -e "$config_file" ]; then
 
-            output=$(source $work_dir/sing-box check -c $config_file 2>&1)
+            output=$($work_dir/sing-box check -c $config_file 2>&1)
 
             if [ -z "$output" ]; then
                 echo -e "${GREEN}INFO: config.json correct.${RESET}"
@@ -205,9 +205,15 @@ check_config() {
 }
 
 update_config() {
-    echo -e "${CYAN}默认订阅链接: $config_url${RESET}"
-    echo -e "${CYAN}是否使用默认订阅链接? [Y/n]: ${RESET}"
-    read sub_choice
+    if [ -z "$config_url" ]; then
+        echo -e "${CYAN}PROMPT: please input sub link: ${RESET}"
+        read config_url_temp
+    else
+        echo -e "${CYAN}PROMPT: default sub link: $config_url${RESET}"
+        echo -e "${CYAN}PROMPT: use default? [Y/n]: ${RESET}"
+        read -n 1 sub_choice
+    fi
+
     sub_choice=${sub_choice:-y}
 
     # 转换为小写并使用 if 语句判断
@@ -216,20 +222,20 @@ update_config() {
         # 在这里执行使用默认链接的操作
     elif [[ "${sub_choice,,}" == "n" ]]; then
         # 在这里执行不使用默认链接的操作
-        echo -e "${CYAN}请输入 config 下载链接: ${RESET}"
+        echo -e "${CYAN}PROMPT: please input sub link: ${RESET}"
         read config_url_temp
         # 检查 share.txt 是否已经有 config_url
         if grep -q '^config_url=' $share; then
             # 替换已有的 config_url
             sed -i 's|^config_url=.*|config_url="'"$config_url_temp"'"|' $share
         else
-            # 追加新变量到 url.txt
+            # 追加新变量到 share.txt
             echo "config_url=\"$config_url_temp\"" >> $share
         fi
         source $share
 
     else
-        echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
+        echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
     fi
 
     #  curl 安装 
@@ -252,12 +258,12 @@ remove_sb() {
     sudo rm -rf $work_dir
     sudo rm -f $service
     sudo rm -f $exec
-    echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
+    echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
 }
 
 create_main_menu(){
     echo -e "${PURPLE}+===+======================================+${RESET}"
-    echo -e "${PURPLE}+                  $1               +${RESET}"
+    echo -e "${PURPLE}                   $1                ${RESET}"
     echo -e "${PURPLE}+===+======================================+${RESET}"
 }
 create_menu(){
@@ -289,12 +295,14 @@ while true; do
     case $choice in
 
         1)  
+            create_main_menu "Installing sing-box"
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             install
             update_config
             ;;
         2)  
+            create_main_menu "Updating sing-box"
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             check_installed_version
