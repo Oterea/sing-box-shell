@@ -31,32 +31,31 @@ get_latest_version() {
     latest_beta_v=""
     latest_stable_v=""
 
-    beta_releases_url="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=15"
-    stable_releases_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+    beta_url="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=15"
+    stable_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
     # 获取最新的稳定版本和下载链接
-    stable_releases_data=$(curl -fsSL "$stable_releases_url")
-    latest_stable_v=$(echo "$stable_releases_data" | jq -r '.tag_name')
-    latest_stable_linux_amd64_url=$(echo "$stable_releases_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
+    stable_data=$(curl -fsSL "$stable_url")
+    latest_stable_v=$(echo "$stable_data" | jq -r '.tag_name')
+    latest_stable_linux_amd64_url=$(echo "$stable_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
     # 获取最新的测试版本（beta）和下载链接
     # 循环每页返回 15 个 releases
-    next_url="$beta_releases_url"
+    next_url="$beta_url"
     while [[ -n "$next_url" ]]; do
         # 获取当前页的 release 数据，并解析 `Link` 头部
-        beta_releases_data_list=$(curl -fsSL -D headers.txt "$next_url")
+        beta_data_list=$(curl -fsSL -D headers.txt "$next_url")
         if [[ $? -ne 0 ]]; then
             echo "❌ 获取 beta 版本数据失败！"
             exit 1
         fi
         # 提取 beta 版本
-        # latest_beta_v=$(echo "$beta_releases_data" | jq -r '.[] | select(.tag_name | test("-beta")) | .tag_name' | head -n 1)
-        beta_releases_data=""
-        beta_releases_data=$(echo "$beta_releases_data_list" | jq -c '.[] | select(.tag_name | test("-beta"))' | head -n 1)
+        beta_data=""
+        beta_data=$(echo "$beta_data_list" | jq -c '.[] | select(.tag_name | test("-beta"))' | head -n 1)
 
         # 如果找到了 beta 版本，立刻退出循环
-        if [[ -n "$beta_releases_data" ]]; then
+        if [[ -n "$beta_data" ]]; then
             # TODO===============assets修改
-            latest_beta_v=$(echo "$stable_releases_data" | jq -r '.tag_name')
-            latest_beta_linux_amd64_url=$(echo "$beta_releases_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
+            latest_beta_v=$(echo "$beta_data" | jq -r '.tag_name')
+            latest_beta_linux_amd64_url=$(echo "$beta_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
             break
         fi
         # 解析 `Link` 头部，获取下一页的 URL
