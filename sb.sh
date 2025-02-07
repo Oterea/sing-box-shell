@@ -207,7 +207,7 @@ check_config() {
 update_config() {
     if [ -z "$config_url" ]; then
         echo -e "${CYAN}PROMPT: please input sub link: ${RESET}"
-        read config_url_temp
+        read config_url
     else
         echo -e "${CYAN}PROMPT: default sub link: $config_url${RESET}"
         echo -e "${CYAN}PROMPT: use default? [Y/n]: ${RESET}"
@@ -262,13 +262,13 @@ remove_sb() {
 }
 
 create_main_menu(){
-    echo -e "${PURPLE}+===+======================================+${RESET}"
+    echo -e "${PURPLE}+===+==============================================+${RESET}"
     echo -e "${PURPLE}                   $1                ${RESET}"
-    echo -e "${PURPLE}+===+======================================+${RESET}"
+    echo -e "${PURPLE}+===+==============================================+${RESET}"
 }
 create_menu(){
     echo -e "${CYAN}  $1 ${WHITE}|              ${CYAN}$2          ${RESET}"
-    echo -e "${WHITE}+---+--------------------------------------+${RESET}"
+    echo -e "${WHITE}+---+----------------------------------------------+${RESET}"
 }
 
 
