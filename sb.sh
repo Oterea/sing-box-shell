@@ -73,7 +73,7 @@ get_latest_version() {
 
 check_version() {
     get_latest_version
-    echo "🚀 最新稳定版本: $latest_stable_v"
+    echo "✅ 最新稳定版本: $latest_stable_v"
     echo "🚀 最新稳定版本URL: $latest_stable_linux_amd64_url"
     echo "🚀 最新测试版本: $latest_beta_v"
     echo "🚀 最新测试版本URL: $latest_beta_linux_amd64_url"
@@ -142,8 +142,10 @@ install() {
     # ====================================设置sb.service==================================== 
     # 提取版本信息
     version_data=$($work_dir/sing-box version)
-    version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
-    version_info="sing-box-$version"
+    # version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+')
+    # version=$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')
+    version="v$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')"
+
 
          
     # 检查sb.service 文件是否存在，若存在则覆盖
@@ -153,7 +155,7 @@ install() {
 
     # 创建 sb.service 文件并写入内容，直接覆盖内容
     echo "[Unit]
-    Description=$version_info
+    Description=$version
     After=network.target
 
     [Service]
@@ -202,6 +204,7 @@ while true; do
   
     create_main_menu "Main menu"
     create_menu 1 "Install sing-box"
+    create_menu 1 "Update sing-box"
     create_menu 3 "Update config"
     create_menu 4 "Start sing-box"
     create_menu 5 "Stop sing-box"
@@ -216,7 +219,18 @@ while true; do
 
     case $choice in
 
-        1)
+        1)  
+            echo -e "${CYAN}Fetching version data...... $config_url${RESET}"
+            get_latest_version
+            echo "✅ Latest stable version: $latest_stable_v"
+            echo "🚀 Latest beta version: $latest_beta_v"
+            install
+            ;;
+        2)  
+            echo -e "${CYAN}Fetching version data...... $config_url${RESET}"
+            get_latest_version
+            echo "✅ Latest stable version: $latest_stable_v"
+            echo "🚀 Latest beta version: $latest_beta_v"
             install
             ;;
         3)
