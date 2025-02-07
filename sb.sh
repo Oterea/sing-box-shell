@@ -220,12 +220,12 @@ while true; do
     case $choice in
 
         1)  
-            echo -e "${GREEN}INFO: fetching version data...... $config_url.${RESET}"
+            echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             install
             ;;
         2)  
-            echo -e "${GREEN}INFO: fetching version data...... $config_url${RESET}"
+            echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             check_installed_version
             install
