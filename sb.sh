@@ -185,8 +185,7 @@ check_config() {
     if [ -e "$work_dir/sing-box" ]; then
         if [ -e "$config_file" ]; then
 
-            output=""
-            output=$($work_dir/sing-box check 2>&1)
+            output=$(source $work_dir/sing-box check -c $config_file 2>&1)
 
             if [ -z "$output" ]; then
                 echo -e "${GREEN}INFO: config.json correct.${RESET}"
