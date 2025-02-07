@@ -187,16 +187,15 @@ check_config() {
 
             
             output=$($work_dir/sing-box check 2>&1)
-        
-            if [ $? -ne 0 ]; then
-        
+            exit_code=$?  # 立即获取退出状态
+
+            if [ $exit_code -ne 0 ]; then
                 echo -e "${RED}ERROR: config.json is not correct.${RESET}"
                 echo -e "${RED}ERROR: $output.${RESET}"
-
             else
-     
                 echo -e "${GREEN}INFO: config.json correct.${RESET}"
             fi
+
             
         else
             echo -e "${YELLOW}ERROR: config.json is not exist.${RESET}"
