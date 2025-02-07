@@ -9,7 +9,8 @@ work_dir="$HOME/sing-box"
     # 下载配置和sing-box的链接文件
 share="$work_dir/share.txt"
 
-
+echo -e "${GREEN}INFO: installing jq${RESET}"
+sudo apt install -y -qq jq >/dev/null 2>&1
 # 删除旧的 sing-box
 remove_sb() {
     cd
