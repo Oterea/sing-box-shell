@@ -11,6 +11,8 @@ RESET='\033[0m' # 重置颜色
 
 proxy="https://github.oterea.top"
 work_dir="$HOME/sing-box"
+exec="/usr/local/bin/sb"
+service="/etc/systemd/system/sb.service"
 share="$work_dir/share.txt"
 source $share
 
@@ -178,12 +180,81 @@ install() {
     fi
 }
 
+check_config() {
+    if [ -e "$work_dir/sing-box" ]; then
+        if [ -e "$config_file" ]; then
+
+            
+            output=$($work_dir/sing-box check 2>&1)
+        
+            if [ $? -ne 0 ]; then
+        
+                echo -e "${RED}ERROR: config.json is not correct.${RESET}"
+                echo -e "${RED}ERROR: $output.${RESET}"
+
+            else
+     
+                echo -e "${GREEN}INFO: config.json correct.${RESET}"
+            fi
+            
+        else
+            echo -e "${YELLOW}ERROR: config.json is not exist.${RESET}"
+        fi
+
+    else
+        echo -e "${YELLOW}WARN: sing-box is not installed, then check config.${RESET}"
+    fi
+}
+
+update_config() {
+    echo -e "${CYAN}默认订阅链接: $config_url${RESET}"
+    echo -e "${CYAN}是否使用默认订阅链接? [Y/n]: ${RESET}"
+    read sub_choice
+    sub_choice=${sub_choice:-y}
+
+    # 转换为小写并使用 if 语句判断
+    if [[ "${sub_choice,,}" == "y" ]]; then
+        :
+        # 在这里执行使用默认链接的操作
+    elif [[ "${sub_choice,,}" == "n" ]]; then
+        # 在这里执行不使用默认链接的操作
+        echo -e "${CYAN}请输入 config 下载链接: ${RESET}"
+        read config_url_temp
+        # 检查 share.txt 是否已经有 config_url
+        if grep -q '^config_url=' $share; then
+            # 替换已有的 config_url
+            sed -i 's|^config_url=.*|config_url="'"$config_url_temp"'"|' $share
+        else
+            # 追加新变量到 url.txt
+            echo "config_url=\"$config_url_temp\"" >> $share
+        fi
+        source $share
+
+    else
+        echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
+    fi
+
+    #  curl 安装 
+    echo -e "${GREEN}INFO: using curl to fetch the config.json...${RESET}"
+    curl --progress-bar -o "$config_file" -L "$config_url" # 直接覆盖目标文件
+    
+
+    # 检查写入是否成功
+    if [ -f "$config_file" ]; then
+        echo -e "${GREEN}INFO: config updating successfully${RESET}"
+    else
+        echo -e "${RED}ERROR: Failed to save config${RESET}"
+        break
+    fi
+    check_config
+}
+
 remove_sb() {
+    cd
     sudo rm -rf $work_dir
     sudo rm -f $service
     sudo rm -f $exec
-    echo
-    echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
+    echo -e "${GREEN}INFO: Old sing-box removed successfully.${RESET}"
 }
 
 create_main_menu(){
@@ -223,6 +294,7 @@ while true; do
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             install
+            update_config
             ;;
         2)  
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
@@ -231,57 +303,21 @@ while true; do
             install
             ;;
         3)
-            echo -e "${PURPLE}============================================${RESET}"
-            echo -e "${PURPLE}              Updating config             ${RESET}"
-            echo -e "${CYAN}默认订阅链接: $config_url${RESET}"
-            echo -e "${CYAN}是否使用默认订阅链接? [Y/n]: ${RESET}"
-            read sub_choice
-            sub_choice=${sub_choice:-y}
 
-            # 转换为小写并使用 if 语句判断
-            if [[ "${sub_choice,,}" == "y" ]]; then
-                :
-                # 在这里执行使用默认链接的操作
-            elif [[ "${sub_choice,,}" == "n" ]]; then
-                # 在这里执行不使用默认链接的操作
-                echo -e "${CYAN}请输入 config 下载链接: ${RESET}"
-                read config_url_temp
-                # 检查 share.txt 是否已经有 config_url
-                if grep -q '^config_url=' $share; then
-                    # 替换已有的 config_url
-                    sed -i 's|^config_url=.*|config_url="'"$config_url_temp"'"|' $share
-                else
-                    # 追加新变量到 url.txt
-                    echo "config_url=\"$config_url_temp\"" >> $share
-                fi
-                source $share
-
-            else
-                echo -e "${YELLOW}WARN: 无效的选择，请输入 y 或 n${RESET}"
-            fi
-
-
-            #  curl 安装 
-            echo -e "${GREEN}INFO: Using curl to fetch the config.json...${RESET}"
-            curl --progress-bar -o "$config_file" -L "$config_url" # 直接覆盖目标文件
-            
-
-            # 检查写入是否成功
-            if [ -f "$config_file" ]; then
-                echo -e "${GREEN}INFO: config updating successfully${RESET}"
-            else
-                echo -e "${RED}ERROR: Failed to save config${RESET}"
-                break
-            fi
-
+            create_main_menu "Updating config"
+            update_config
             ;;
         4)  
+            # 检查 sing-box 和 config
+            check_config
             sudo systemctl start sb
             curl ipinfo.io
             echo
             echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
             ;;
         5)  
+            # 检查 sing-box 和 config
+            check_config
             sudo systemctl stop sb
             curl ipinfo.io
             echo
