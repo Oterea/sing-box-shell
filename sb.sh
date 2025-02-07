@@ -76,9 +76,9 @@ check_installed_version() {
         # 提取版本信息
         version_data=$($work_dir/sing-box version)
         version="v$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')"
-        
+        echo -e "${GREEN}INFO: sing-box version: $version."
     else
-        echo -e "❌${YELLOW}WARN: sing-box is not installed.${RESET}"
+        echo -e "${YELLOW}WARN: sing-box is not installed.${RESET}"
     fi
 
     
@@ -229,9 +229,9 @@ while true; do
             echo -e "${GREEN}INFO: fetching version data...... $config_url${RESET}"
             get_latest_version
             check_installed_version
-            echo -e "${GREEN}INFO: $version."
-            echo -e "✅ ${GREEN}INFO: latest stable version: $latest_stable_v.${RESET}"
-            echo -e "🚀 ${GREEN}INFO: latest beta version: $latest_beta_v.${RESET}"
+            
+            echo -e "${GREEN}INFO: latest stable version ✅: $latest_stable_v.${RESET}"
+            echo -e "${GREEN}INFO: latest beta version 🚀: $latest_beta_v.${RESET}"
             install
             ;;
         3)

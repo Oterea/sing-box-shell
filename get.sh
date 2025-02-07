@@ -2,7 +2,7 @@ GREEN='\033[32m'
 RESET='\033[0m' # 重置颜色
 
 # 定义变量
-
+cd
 config_url=""
     # 定义工作文件夹
 work_dir="$HOME/sing-box"
