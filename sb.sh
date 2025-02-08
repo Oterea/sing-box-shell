@@ -293,7 +293,7 @@ while true; do
 
   
     create_main_menu "Main menu"
-    create_menu 1 "Install sing-box"
+    create_menu 1 "📥 Install sing-box"
     create_menu 2 "Update sing-box"
     create_menu 3 "Update config"
     create_menu 4 "Start sing-box"
