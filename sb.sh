@@ -369,12 +369,12 @@ while true; do
             break
             ;;
         8)  
-            remove_sb
+            sudo rm -f $exec
             curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
             sudo chmod +x sb.sh
 
             sudo mv -f sb.sh /usr/local/bin/sb
-            echo -e "${GREEN}INFO: sing-box-shell installed successfully.${RESET}"
+            echo -e "${GREEN}INFO: sing-box-shell updated successfully.${RESET}"
             break
             ;;
 
