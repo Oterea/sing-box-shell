@@ -312,14 +312,14 @@ while true; do
     case $choice in
 
         1)  
-            create_main_menu "🍉 Installing sing-box"
+            create_main_menu "🍉 Install sing-box"
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             install
             fetch_config
             ;;
         2)  
-            create_main_menu "🍒 Updating sing-box"
+            create_main_menu "🍒 Update sing-box"
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             check_installed_version
@@ -327,7 +327,7 @@ while true; do
             ;;
         3)
 
-            create_main_menu "🍊 Updating config"
+            create_main_menu "🍊 Update config"
             fetch_config
             ;;
         4)  
