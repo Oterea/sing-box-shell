@@ -14,13 +14,13 @@ work_dir="$HOME/sing-box"
 exec="/usr/local/bin/sb"
 service="/etc/systemd/system/sb.service"
 share="$work_dir/share.txt"
-source $share
-
-
 
 config_file="$work_dir/config.json"  # 保存为 config.json 文件
 
-
+# 创建目标目录（如果不存在）
+if [ ! -d "$work_dir" ]; then
+    mkdir -p "$work_dir"
+fi
 
 get_latest_version() {
     # ====================================获取最新版本下载链接====================================
@@ -213,6 +213,12 @@ check_config() {
 }
 
 fetch_config() {
+    # 文件不存在则写入，存在就不管
+    if [ ! -e "$share" ]; then
+        echo "config_url=$config_url" >> "$share"
+    fi
+    source $share
+
     if [ -z "$config_url" ]; then
         echo -e "${CYAN}PROMPT: please input sub link: ${RESET}"
         read config_url
@@ -369,7 +375,7 @@ while true; do
             break
             ;;
         8)  
-            sudo rm -f $exec
+            remove_sb
             curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
             sudo chmod +x sb.sh
 
