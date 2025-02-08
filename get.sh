@@ -7,8 +7,7 @@ exec="/usr/local/bin/sb"
 config_url=""
     # 定义工作文件夹
 work_dir="$HOME/sing-box"
-    # 下载配置和sing-box的链接文件
-share="$work_dir/share.txt"
+
 
 # 检查curl下载工具
 if command -v curl >/dev/null 2>&1; then
@@ -18,7 +17,6 @@ else
     exit
 fi
 # 检查jq
-
 if command -v jq >/dev/null 2>&1; then
     echo -e "${GREEN}INFO: jq is installed${RESET}"
 else
@@ -50,14 +48,6 @@ else
     echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
 fi
 
-
-# 创建目标目录（如果不存在）
-if [ ! -d "$work_dir" ]; then
-    mkdir -p "$work_dir"
-fi
-
-
-echo "config_url=$config_url" >> "$share"
 
 
 

@@ -276,7 +276,7 @@ remove_sb() {
 
 create_main_menu(){
     echo -e "${PURPLE}+===+==============================================+${RESET}"
-    echo -e "${PURPLE}                   $1                ${RESET}"
+    echo -e "${PURPLE}                   🏠 $1                ${RESET}"
     echo -e "${PURPLE}+===+==============================================+${RESET}"
 }
 create_menu(){
