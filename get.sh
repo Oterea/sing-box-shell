@@ -17,6 +17,7 @@ else
     echo -e "${YELLOW}WARN: curl is not installed${RESET}"
     exit
 fi
+# 检查jq
 
 if command -v jq >/dev/null 2>&1; then
     echo -e "${GREEN}INFO: jq is installed${RESET}"
@@ -36,7 +37,19 @@ remove_sb() {
     sudo rm -f $exec
     echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
 }
-remove_sb
+echo -e "${GREEN}INFO: remove old sing-box and config? [Y/n].${RESET}"
+read -n 1 is_remove
+is_remove=${is_remove:-y}
+
+# 转换为小写并使用 if 语句判断
+if [[ "${is_remove,,}" == "y" ]]; then
+    remove_sb
+elif [[ "${is_remove,,}" == "n" ]]; then
+    :
+else
+    echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
+fi
+
 
 # 创建目标目录（如果不存在）
 if [ ! -d "$work_dir" ]; then

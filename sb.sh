@@ -74,17 +74,19 @@ check_installed_version() {
         version_data=$($work_dir/sing-box version)
         version="v$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')"
         echo -e "${GREEN}INFO: sing-box version: $version."
-    else
-        echo -e "${YELLOW}WARN: sing-box is not installed.${RESET}"
+        return 0
+    
     fi
 
     
+    echo -e "${YELLOW}WARN: sing-box is not installed.${RESET}"
+    return 1
+    
 }
-
 
 install() {
     # 提示用户输入
-    echo -e "${CYAN}Install stable? [Y/n]: ${RESET}"
+    echo -e "${CYAN}PROMPT: install stable version? [Y/n]: ${RESET}"
     read -n 1 is_stable
     is_stable=${is_stable:-y}
 
@@ -105,7 +107,7 @@ install() {
     success=1
     # curl 下载
     
-    echo -e "${GREEN}INFO: Using curl to download sing-box...${RESET}"
+    echo -e "${GREEN}INFO: using curl to download sing-box...${RESET}"
     curl --progress-bar -o "$work_dir/$file_name" -L "$proxy/$download_url"
     if [ $? -eq 0 ]; then
         success=0
@@ -175,26 +177,39 @@ install() {
 }
 
 check_config() {
-    if [ -e "$work_dir/sing-box" ]; then
+
+    check_installed_version
+    status=$?
+
+    if [ $status -eq 0 ]; then
         if [ -e "$config_file" ]; then
 
             output=$($work_dir/sing-box check -c $config_file 2>&1)
 
             if [ -z "$output" ]; then
                 echo -e "${GREEN}INFO: config.json correct.${RESET}"
+                return 0
                 
             else
                 echo -e "${RED}ERROR: config.json is not correct.${RESET}"
                 echo "$output"
+                return 1
             fi
             
         else
             echo -e "${YELLOW}ERROR: config.json is not exist.${RESET}"
+            return 1
         fi
-
     else
-        echo -e "${YELLOW}WARN: sing-box is not installed, then check config.${RESET}"
+        return 1
     fi
+
+    # if [ -e "$work_dir/sing-box" ]; then
+        
+
+    # else
+    #     echo -e "${YELLOW}WARN: sing-box is not installed, then check config.${RESET}"
+    # fi
 }
 
 update_config() {
@@ -264,6 +279,8 @@ create_menu(){
     echo -e "${WHITE}+---+----------------------------------------------+${RESET}"
 }
 
+# 运行提示
+check_installed_version
 
 
 # 一级菜单
@@ -281,7 +298,7 @@ while true; do
 
 
     # 提示用户输入
-    echo -e "${CYAN}Please enter the number: ${RESET}"
+    echo -e "${CYAN}PROMPT: Please enter the number: ${RESET}"
     read -n 1 choice
     echo
 
@@ -316,7 +333,7 @@ while true; do
             ;;
         5)  
             # 检查 sing-box 和 config
-            # check_config
+            check_config
             sudo systemctl stop sb
             curl ipinfo.io
             echo
