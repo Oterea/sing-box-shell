@@ -197,7 +197,7 @@ check_config() {
             fi
             
         else
-            echo -e "${YELLOW}ERROR: config.json is not exist.${RESET}"
+            echo -e "${RED}ERROR: config.json is not exist.${RESET}"
             return 1
         fi
     else
@@ -212,7 +212,7 @@ check_config() {
     # fi
 }
 
-update_config() {
+fetch_config() {
     if [ -z "$config_url" ]; then
         echo -e "${CYAN}PROMPT: please input sub link: ${RESET}"
         read config_url
@@ -246,19 +246,18 @@ update_config() {
         echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
     fi
 
-    #  curl 安装 
+    #  curl 拉取配置文件 
     echo -e "${GREEN}INFO: using curl to fetch the config.json...${RESET}"
     curl --progress-bar -o "$config_file" -L "$config_url" # 直接覆盖目标文件
     
 
     # 检查写入是否成功
-    if [ -f "$config_file" ]; then
-        echo -e "${GREEN}INFO: config updating successfully${RESET}"
-    else
-        echo -e "${RED}ERROR: Failed to save config${RESET}"
-        break
-    fi
     check_config
+    status=$? 
+    if [ $status -eq 0 ]; then
+        echo -e "${GREEN}INFO: fetch config successfully${RESET}"
+
+    fi
 }
 
 remove_sb() {
@@ -281,7 +280,7 @@ create_menu(){
 
 # 运行提示
 check_installed_version
-
+check_config
 
 # 一级菜单
 while true; do
@@ -293,7 +292,8 @@ while true; do
     create_menu 3 "Update config"
     create_menu 4 "Start sing-box"
     create_menu 5 "Stop sing-box"
-    create_menu 6 "Remove sing-box"
+    create_menu 6 "Status sing-box"
+    create_menu 7 "Remove sing-box"
     create_menu 0 "Exit shell"
 
 
@@ -309,7 +309,7 @@ while true; do
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             install
-            update_config
+            fetch_config
             ;;
         2)  
             create_main_menu "Updating sing-box"
@@ -321,25 +321,50 @@ while true; do
         3)
 
             create_main_menu "Updating config"
-            update_config
+            fetch_config
             ;;
         4)  
             # 检查 sing-box 和 config
             check_config
-            sudo systemctl start sb
-            curl ipinfo.io
-            echo
-            echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
+            status=$? 
+            if [ $status -eq 0 ]; then
+                sudo systemctl start sb
+                echo
+                echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
+            else
+                continue
+            fi
+
+
             ;;
         5)  
             # 检查 sing-box 和 config
             check_config
-            sudo systemctl stop sb
-            curl ipinfo.io
-            echo
-            echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
+            status=$?  # 获取返回值
+
+            if [ $status -eq 0 ]; then
+                sudo systemctl stop sb
+                echo
+                echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
+            else
+                continue
+            fi
+            
             ;;
         6)  
+            # status
+            check_config
+            status=$?  # 获取返回值
+
+            if [ $status -eq 0 ]; then
+                sudo systemctl status sb
+                curl ipinfo.io
+            else
+                continue
+            fi
+            
+            ;;
+        7)  
             remove_sb
             break
             ;;
