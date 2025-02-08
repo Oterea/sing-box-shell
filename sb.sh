@@ -276,7 +276,7 @@ remove_sb() {
 
 create_main_menu(){
     echo -e "${PURPLE}+===+==============================================+${RESET}"
-    echo -e "${PURPLE}                   🏠 $1                ${RESET}"
+    echo -e "${PURPLE}                   $1                ${RESET}"
     echo -e "${PURPLE}+===+==============================================+${RESET}"
 }
 create_menu(){
@@ -292,16 +292,16 @@ check_config
 while true; do
 
   
-    create_main_menu "Main menu"
-    create_menu 1 "📥 Install sing-box"
-    create_menu 2 "Update sing-box"
-    create_menu 3 "Update config"
-    create_menu 4 "▶️ Start sing-box"
-    create_menu 5 "⏸️ Stop sing-box"
-    create_menu 6 "● Status sing-box"
-    create_menu 7 "Remove sing-box"
-    create_menu 8 "● Update shell"
-    create_menu 0 "Exit shell"
+    create_main_menu "🏠 Main menu"
+    create_menu 1 "🍉 Install sing-box"
+    create_menu 2 "🍒 Update sing-box"
+    create_menu 3 "🍊 Update config"
+    create_menu 4 "🌽 Start sing-box"
+    create_menu 5 "🥝 Stop sing-box"
+    create_menu 6 "🥭 Status sing-box"
+    create_menu 7 "🍋 Remove sing-box"
+    create_menu 8 "🍋‍🟩 Update shell"
+    create_menu 0 "🍑 Exit shell"
 
 
     # 提示用户输入
@@ -312,14 +312,14 @@ while true; do
     case $choice in
 
         1)  
-            create_main_menu "Installing sing-box"
+            create_main_menu "🍉 Installing sing-box"
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             install
             fetch_config
             ;;
         2)  
-            create_main_menu "Updating sing-box"
+            create_main_menu "🍒 Updating sing-box"
             echo -e "${GREEN}INFO: fetching version data......${RESET}"
             get_latest_version
             check_installed_version
@@ -327,7 +327,7 @@ while true; do
             ;;
         3)
 
-            create_main_menu "Updating config"
+            create_main_menu "🍊 Updating config"
             fetch_config
             ;;
         4)  
