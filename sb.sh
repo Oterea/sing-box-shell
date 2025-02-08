@@ -86,7 +86,7 @@ check_installed_version() {
 
 install() {
     # 提示用户输入
-    echo -e "${CYAN}PROMPT: install stable version? [Y/n]: ${RESET}"
+    echo -e "${CYAN}🧭 PROMPT: install stable version? [Y/n]: ${RESET}"
     read -n 1 is_stable
     is_stable=${is_stable:-y}
 
@@ -220,11 +220,11 @@ fetch_config() {
     source $share
 
     if [ -z "$config_url" ]; then
-        echo -e "${CYAN}PROMPT: please input sub link: ${RESET}"
+        echo -e "${CYAN}🧭 PROMPT: please input sub link: ${RESET}"
         read config_url
     else
-        echo -e "${CYAN}PROMPT: default sub link: $config_url${RESET}"
-        echo -e "${CYAN}PROMPT: use default? [Y/n]: ${RESET}"
+        echo -e "${CYAN}🧭 PROMPT: default sub link: $config_url${RESET}"
+        echo -e "${CYAN}🧭 PROMPT: use default? [Y/n]: ${RESET}"
         read -n 1 sub_choice
     fi
 
@@ -236,7 +236,7 @@ fetch_config() {
         # 在这里执行使用默认链接的操作
     elif [[ "${sub_choice,,}" == "n" ]]; then
         # 在这里执行不使用默认链接的操作
-        echo -e "${CYAN}PROMPT: please input sub link: ${RESET}"
+        echo -e "${CYAN}🧭 PROMPT: please input sub link: ${RESET}"
         read config_url_temp
         # 检查 share.txt 是否已经有 config_url
         if grep -q '^config_url=' $share; then
@@ -305,7 +305,7 @@ while true; do
 
 
     # 提示用户输入
-    echo -e "${CYAN}PROMPT: Please enter the number: ${RESET}"
+    echo -e "${CYAN}🧭 PROMPT: Please enter the number: ${RESET}"
     read -n 1 choice
     echo
 
