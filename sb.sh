@@ -300,7 +300,7 @@ while true; do
     create_menu 5 "🥝 Stop sing-box"
     create_menu 6 "🥭 Status sing-box"
     create_menu 7 "🍋 Remove sing-box"
-    create_menu 8 "🍋‍🟩 Update shell"
+    create_menu 8 "🍈 Update shell"
     create_menu 0 "🍑 Exit shell"
 
 
