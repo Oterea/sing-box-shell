@@ -294,6 +294,7 @@ while true; do
     create_menu 5 "Stop sing-box"
     create_menu 6 "Status sing-box"
     create_menu 7 "Remove sing-box"
+    create_menu 8 "Update shell"
     create_menu 0 "Exit shell"
 
 
@@ -329,7 +330,6 @@ while true; do
             status=$? 
             if [ $status -eq 0 ]; then
                 sudo systemctl start sb
-                echo
                 echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
             else
                 continue
@@ -344,7 +344,6 @@ while true; do
 
             if [ $status -eq 0 ]; then
                 sudo systemctl stop sb
-                echo
                 echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
             else
                 continue
@@ -367,6 +366,15 @@ while true; do
             ;;
         7)  
             remove_sb
+            break
+            ;;
+        8)  
+            remove_sb
+            curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
+            sudo chmod +x sb.sh
+
+            sudo mv -f sb.sh /usr/local/bin/sb
+            echo -e "${GREEN}INFO: sing-box-shell installed successfully.${RESET}"
             break
             ;;
 
