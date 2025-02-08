@@ -279,7 +279,7 @@ create_menu(){
 }
 
 # 运行提示
-check_installed_version
+
 check_config
 
 # 一级菜单
@@ -359,6 +359,7 @@ while true; do
             if [ $status -eq 0 ]; then
                 sudo systemctl status sb
                 curl ipinfo.io
+                echo
             else
                 continue
             fi
