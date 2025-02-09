@@ -1,7 +1,8 @@
 #!/bin/bash
 # 定义颜色变量
 RED='\033[31m'
-GREEN='\033[32m'
+GREEN='\033[1;32m'
+
 YELLOW='\033[33m'
 BLUE='\033[34m'
 PURPLE='\033[35m'
@@ -21,6 +22,9 @@ config_file="$work_dir/config.json"  # 保存为 config.json 文件
 if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
+info() {
+    printf '%s\n' "${GREEN}INFO: ${RESET} $*"
+}
 
 get_latest_version() {
     # ====================================获取最新版本下载链接====================================
@@ -63,8 +67,9 @@ get_latest_version() {
         # 清理临时文件
         rm -f headers.txt
     done
-    echo -e "${GREEN}INFO: latest stable version ✅: $latest_stable_v.${RESET}"
-    echo -e "${GREEN}INFO: latest beta version 🚀: $latest_beta_v.${RESET}"
+    info "latest stable version ✅: $latest_stable_v."
+    info "latest beta version 🚀: $latest_beta_v."
+
 
 }
 check_installed_version() {
