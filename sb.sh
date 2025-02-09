@@ -1,14 +1,19 @@
 #!/bin/bash
 # 定义颜色变量
-RED='\033[31m'
-GREEN='\033[1;32m'
 
-YELLOW='\033[33m'
-BLUE='\033[34m'
-PURPLE='\033[35m'
-CYAN='\033[36m'
-WHITE='\033[37m'
-RESET='\033[0m' # 重置颜色
+
+
+BOLD="$(tput bold 2>/dev/null || printf '')"
+GREY="$(tput setaf 0 2>/dev/null || printf '')"
+UNDERLINE="$(tput smul 2>/dev/null || printf '')"
+RED="$(tput setaf 1 2>/dev/null || printf '')"
+GREEN="$(tput setaf 2 2>/dev/null || printf '')"
+YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
+BLUE="$(tput setaf 4 2>/dev/null || printf '')"
+PURPLE="$(tput setaf 5 2>/dev/null || printf '')"
+CYAN="$(tput setaf 6 2>/dev/null || printf '')"
+WHITE="$(tput setaf 7 2>/dev/null || printf '')"
+RESET="$(tput sgr0 2>/dev/null || printf '')"
 
 proxy="https://github.oterea.top"
 work_dir="$HOME/sing-box"
@@ -23,7 +28,7 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%s\n' "${GREEN}INFO: ${RESET} $*"
+    printf '%s\n' "${BOLD}${GREEN}INFO: ${RESET} $*"
 }
 
 get_latest_version() {

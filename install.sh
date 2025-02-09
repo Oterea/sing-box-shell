@@ -26,7 +26,6 @@ else
 fi
 
 
-
 # 删除旧的 sing-box
 remove_sb() {
     cd
