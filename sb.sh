@@ -28,7 +28,7 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%s\n' "${BOLD}${GREY}> ${GREEN}INFO: ${RESET} $*"
+    printf '%s\n' "${RESET}${BOLD}${GREY}> ${GREEN}INFO: ${RESET} $*"
 }
 warn() {
     printf '%s\n' "${BOLD}${GREY}> ${YELLOW}WARN: ${RESET} $*"
