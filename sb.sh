@@ -339,14 +339,42 @@ remove_sb() {
     
 }
 
+# create_main_menu(){
+#     echo -e "${PURPLE}+===================================+${RESET}"
+#     echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
+#     echo -e "${PURPLE}+===================================+${RESET}"
+# }
+# create_menu(){
+#     echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
+#     echo -e "${WHITE}+-----------------------------------+${RESET}"
+# }
+
+# 37
+line="+-----------------------------------+"
+
+line_len=${#line}
+left_space_len=4
+emoji_len=6
+content_len=20
+right_space_len=$((line_len - left_space_len - 1))
+
+
 create_main_menu(){
-    echo -e "${PURPLE}+===================================+${RESET}"
-    echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
-    echo -e "${PURPLE}+===================================+${RESET}"
+    printf "%s\n" "${PURPLE}+===================================+===================================+${RESET}"
+    printf "%-30s %-20s\n" "" "$1" 
+    printf "%s\n" "${PURPLE}+===================================+===================================+${RESET}"
 }
 create_menu(){
-    echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
-    echo -e "${WHITE}+-----------------------------------+${RESET}"
+    
+    # echo $right_space_len
+    printf "%-4s %-${right_space_len}s %-1s" "" "$1" "+"
+    printf "%-4s %-${right_space_len}s\n" "" "$2"
+    printf "%s\n" "${WHITE}+-----------------------------------+-----------------------------------+ ${RESET}"
+}
+
+create_info_menu() {
+    printf "%-4s %s\n" "" "$1"
+    printf "%s\n" "${WHITE}+-----------------------------------+-----------------------------------+ ${RESET}"
 }
 
 # 运行提示
@@ -367,6 +395,25 @@ while true; do
     create_menu 🍋 "7. Remove sing-box"
     create_menu 🍈 "8. Update shell"
     create_menu 🍑 "0. Exit shell"
+
+
+
+
+
+
+    json_data=$(curl -s ipinfo.io)  # 只发起一次请求并存储 JSON
+    ip=$(echo "$json_data" | jq -r '.ip')
+    country=$(echo "$json_data" | jq -r '.country')
+    status=$(systemctl is-active sb)
+
+
+    create_main_menu  "🏠   Main Menu"
+    create_menu "🍉   1. Install sing-box"  "🍒   2. Update sing-box"
+    create_menu "🍊   3. Update config"     "🌽   4. Start sing-box"
+    create_menu "🥝   5. Stop sing-box"     "🥭   6. Status sing-box"
+    create_menu "🍋   7. Remove sing-box"   "🍈   8. Update shell"
+    create_menu "🍑   0. Exit shell"
+    create_info_menu "IP: $ip, Country: $country, Status: $status"
 
 
     # 提示用户输入
