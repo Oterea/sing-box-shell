@@ -27,7 +27,7 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%s\n' "${BOLD}${GREEN}> INFO:${RESET} $*"
+    printf '%b\n' "${BOLD}${GREEN}> INFO:${RESET} $*"
 }
 warn() {
     printf '%s\n' "${BOLD}${YELLOW}> WARN:${RESET} $*"
@@ -282,6 +282,7 @@ fetch_config() {
 
 remove_sb() {
     cd
+    sudo systemctl stop sb
     sudo rm -rf $work_dir
     sudo rm -f $service
     sudo rm -f $exec
