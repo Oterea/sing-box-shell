@@ -27,18 +27,18 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%b\n' "${BOLD}${GREEN}> INFO:${RESET} $*"
+    printf '%b\n' "${GREEN}> INFO:${RESET} $*"
 }
 warn() {
-    printf '%s\n' "${BOLD}${YELLOW}> WARN:${RESET} $*"
+    printf '%s\n' "${YELLOW}> WARN:${RESET} $*"
 }
 
 error() {
-    printf '%s\n' "${BOLD}${RED}> ERROR:${RESET} $*"
+    printf '%s\n' "${RED}> ERROR:${RESET} $*"
 }
 
 prompt() {
-    printf '%s\n' "${BOLD}${CYAN}? PROMPT:${RESET} $*"
+    printf '%s\n' "${CYAN}? PROMPT:${RESET} $*"
 }
 
 get_latest_version() {
