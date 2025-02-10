@@ -281,12 +281,28 @@ fetch_config() {
 }
 
 remove_sb() {
-    cd
-    sudo systemctl stop sb
-    sudo rm -rf $work_dir
-    sudo rm -f $service
-    sudo rm -f $exec
-    info "old sing-box removed successfully."
+    prompt "remove sing-box-shell and other config? [Y/n]"
+    read -n 1 choice
+    choice=${choice:-y}
+    case "$choice" in
+        [Yy])
+            cd
+            if [ -e "$service" ]; then
+                sudo systemctl stop sb
+            fi
+            
+            sudo rm -rf $work_dir
+            sudo rm -f $service
+            sudo rm -f $exec
+            info "old sing-box removed successfully."
+        ;;
+        [Nn])
+        ;;
+        *)
+            warn "invalid input, please input 'y' or 'n'."
+        ;;
+    esac
+    
 }
 
 create_main_menu(){
@@ -387,21 +403,24 @@ while true; do
             ;;
         7)  
             remove_sb
-            break
+           
+            
+            
             ;;
         8)  
+            
             remove_sb
             curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
             sudo chmod +x sb.sh
 
             sudo mv -f sb.sh /usr/local/bin/sb
             info "sing-box-shell updated successfully."
-            break
+            exit
             ;;
 
         0)
             info "exit sing-box shell successfully."
-            break
+            exit
             ;;
         *)
             warn "not a valid number."
