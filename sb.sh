@@ -28,7 +28,14 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%s\n' "${BOLD}${GREY}>${GREEN}INFO: ${RESET} $*"
+    printf '%s\n' "${BOLD}${GREY}> ${GREEN}INFO: ${RESET} $*"
+}
+warn() {
+    printf '%s\n' "${BOLD}${GREY}> ${YELLOW}WARN: ${RESET} $*"
+}
+
+error() {
+    printf '%s\n' "${BOLD}${GREY}> ${RED}ERROR: ${RESET} $*"
 }
 
 get_latest_version() {
@@ -83,13 +90,13 @@ check_installed_version() {
         # 提取版本信息
         version_data=$($work_dir/sing-box version)
         version="v$(echo "$version_data" | grep -oP 'sing-box version \K[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9\.]+)?')"
-        echo -e "${GREEN}INFO: sing-box version: $version."
+        info "sing-box version: $version."
         return 0
     
     fi
 
     
-    echo -e "${YELLOW}WARN: sing-box is not installed.${RESET}"
+    warn "sing-box is not installed."
     return 1
     
 }
@@ -102,14 +109,14 @@ install() {
 
     # 转换为小写并使用 if 语句判断
     if [[ "${is_stable,,}" == "y" ]]; then
-        echo -e "${GREEN}INFO: downloading stable version. ${RESET}"
+        info "downloading stable version."
         download_url=$latest_stable_linux_amd64_url
     elif [[ "${is_stable,,}" == "n" ]]; then
-        echo -e "${GREEN}INFO: downloading beta version. ${RESET}"
+        info "downloading beta version."
         download_url=$latest_beta_linux_amd64_url
 
     else
-        echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
+        warn "invalid input, please input 'y' or 'n'."
     fi
     
     # ====================================下载解压====================================
@@ -117,7 +124,7 @@ install() {
     success=1
     # curl 下载
     
-    echo -e "${GREEN}INFO: using curl to download sing-box...${RESET}"
+    info "using curl to download sing-box."
     curl --progress-bar -o "$work_dir/$file_name" -L "$proxy/$download_url"
     if [ $? -eq 0 ]; then
         success=0
@@ -126,7 +133,7 @@ install() {
 
     # 检查下载是否成功
     if [ "$success" -eq 0 ]; then
-        echo -e "${GREEN}INFO: sing-box downloaded successfully to $work_dir/$file_name.${RESET}"
+        info "sing-box downloaded successfully to $work_dir/$file_name."
     else
         echo -e "${RED}ERROE: File download failed.${RESET}"
         rm $work_dir/$file_name
@@ -135,10 +142,10 @@ install() {
 
     # 检查解压工具 tar 是否安装，如果没有则自动安装
     if ! command -v tar >/dev/null 2>&1; then
-        echo -e "${YELLOW}WARN: tar is not installed. Installing tar...${RESET}"
+        warn "tar is not installed. Installing tar."
         sudo apt update && sudo apt install -y tar
         if [ $? -ne 0 ]; then
-            echo -e "${RED}ERROR: Failed to install tar. Exiting...${RESET}"
+            error "failed to install tar. exiting."
             break
         fi
     fi
@@ -146,9 +153,9 @@ install() {
     # 解压并提取内容到目标目录
     tar --strip-components=1 -xzf "$work_dir/$file_name" -C "$work_dir"
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}INFO: ${file_name} extracted successfully to $work_dir.${RESET}"
+        info "${file_name} extracted successfully to $work_dir."
     else
-        echo -e "${RED}ERROR: Failed to extract sing-box.${RESET}"
+        error "failed to extract sing-box."
         break
     fi
     # 删除源文件
@@ -159,7 +166,7 @@ install() {
   
     # 检查sb.service 文件是否存在，若存在则覆盖
     if [ -f "$service" ]; then
-        echo -e "${YELLOW}INFO: The file $service already exists. It will be overwritten.${RESET}"
+        warn "The file $service already exists. It will be overwritten."
     fi
 
     # 创建 sb.service 文件并写入内容，直接覆盖内容
@@ -177,11 +184,11 @@ install() {
 
     # 检查文件是否创建并覆盖成功
     if [ -f "$service" ]; then
-        echo -e "${GREEN}INFO: Service file created successfully at $service.${RESET}"
+        info "service file created successfully at $service."
         # 重新加载 systemd 配置
         sudo systemctl daemon-reload
     else
-        echo -e "${RED}ERROR: Failed to create sb.service file.${RESET}"
+        error "failed to create sb.service file."
         break
     fi
 }
@@ -197,29 +204,23 @@ check_config() {
             output=$($work_dir/sing-box check -c $config_file 2>&1)
 
             if [ -z "$output" ]; then
-                echo -e "${GREEN}INFO: config.json correct.${RESET}"
+                info "config.json is correct."
                 return 0
                 
             else
-                echo -e "${RED}ERROR: config.json is not correct.${RESET}"
+                error "config.json is not correct."
                 echo "$output"
                 return 1
             fi
             
         else
-            echo -e "${RED}ERROR: config.json is not exist.${RESET}"
+            error "config.json is not exist."
             return 1
         fi
     else
         return 1
     fi
 
-    # if [ -e "$work_dir/sing-box" ]; then
-        
-
-    # else
-    #     echo -e "${YELLOW}WARN: sing-box is not installed, then check config.${RESET}"
-    # fi
 }
 
 fetch_config() {
@@ -259,11 +260,11 @@ fetch_config() {
         source $share
 
     else
-        echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
+        warn "invalid input, please input 'y' or 'n'."
     fi
 
     #  curl 拉取配置文件 
-    echo -e "${GREEN}INFO: using curl to fetch the config.json...${RESET}"
+    info "using curl to fetch the config.json."
     curl --progress-bar -o "$config_file" -L "$config_url" # 直接覆盖目标文件
     
 
@@ -271,7 +272,7 @@ fetch_config() {
     check_config
     status=$? 
     if [ $status -eq 0 ]; then
-        echo -e "${GREEN}INFO: fetch config successfully${RESET}"
+        info "fetch config successfully"
 
     fi
 }
@@ -281,7 +282,7 @@ remove_sb() {
     sudo rm -rf $work_dir
     sudo rm -f $service
     sudo rm -f $exec
-    echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
+    info "old sing-box removed successfully."
 }
 
 create_main_menu(){
@@ -323,14 +324,14 @@ while true; do
 
         1)  
             create_main_menu "🍉 Install sing-box"
-            echo -e "${GREEN}INFO: fetching version data......${RESET}"
+            info "fetching version data."
             get_latest_version
             install
             fetch_config
             ;;
         2)  
             create_main_menu "🍒 Update sing-box"
-            echo -e "${GREEN}INFO: fetching version data......${RESET}"
+            info "fetching version data."
             get_latest_version
             check_installed_version
             install
@@ -346,7 +347,7 @@ while true; do
             status=$? 
             if [ $status -eq 0 ]; then
                 sudo systemctl start sb
-                echo -e "${GREEN}INFO: sing-box started successfully.${RESET}"
+                info "sing-box started successfully."
             else
                 continue
             fi
@@ -360,7 +361,7 @@ while true; do
 
             if [ $status -eq 0 ]; then
                 sudo systemctl stop sb
-                echo -e "${GREEN}INFO: sing-box stoped successfully.${RESET}"
+                info "sing-box stoped successfully."
             else
                 continue
             fi
@@ -390,16 +391,16 @@ while true; do
             sudo chmod +x sb.sh
 
             sudo mv -f sb.sh /usr/local/bin/sb
-            echo -e "${GREEN}INFO: sing-box-shell updated successfully.${RESET}"
+            info "sing-box-shell updated successfully."
             break
             ;;
 
         0)
-            echo -e "${GREEN}INFO: Exit sing-box shell successfully.${RESET}"
+            info "exit sing-box shell successfully."
             break
             ;;
         *)
-            echo -e "${YELLOW}WARN:not a valid number${RESET}"
+            warn "not a valid number."
             ;;
     esac
 done
