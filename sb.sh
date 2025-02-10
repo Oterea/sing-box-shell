@@ -341,11 +341,11 @@ remove_sb() {
 
 create_main_menu(){
     echo -e "${PURPLE}+===================================+${RESET}"
-    echo -e "${CYAN}     $1     ${CYAN}$2          ${RESET}"
+    echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
     echo -e "${PURPLE}+===================================+${RESET}"
 }
 create_menu(){
-    echo -e "${CYAN}     $1     ${CYAN}$2          ${RESET}"
+    echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
     echo -e "${WHITE}+-----------------------------------+${RESET}"
 }
 
