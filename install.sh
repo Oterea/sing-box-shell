@@ -32,21 +32,21 @@ remove_sb() {
     sudo rm -rf $work_dir
     sudo rm -f $service
     sudo rm -f $exec
-    echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
+    # echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
 }
-echo -e "${GREEN}INFO: remove old sing-box and config? [Y/n].${RESET}"
-read -n 1 is_remove
-is_remove=${is_remove:-y}
+# echo -e "${GREEN}INFO: remove old sing-box and config? [Y/n].${RESET}"
+# read -n 1 is_remove
+# is_remove=${is_remove:-y}
 
-# 转换为小写并使用 if 语句判断
-if [[ "${is_remove,,}" == "y" ]]; then
-    remove_sb
-elif [[ "${is_remove,,}" == "n" ]]; then
-    :
-else
-    echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
-fi
-
+# # 转换为小写并使用 if 语句判断
+# if [[ "${is_remove,,}" == "y" ]]; then
+#     remove_sb
+# elif [[ "${is_remove,,}" == "n" ]]; then
+#     :
+# else
+#     echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
+# fi
+remove_sb
 
 
 

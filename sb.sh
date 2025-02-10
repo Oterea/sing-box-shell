@@ -403,7 +403,7 @@ while true; do
             ;;
         7)  
             remove_sb
-           
+            exit
             
             
             ;;
