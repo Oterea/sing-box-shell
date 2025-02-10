@@ -107,7 +107,7 @@ check_installed_version() {
 install() {
     # 提示用户输入
     prompt "install stable version? [Y/n]:"
-    read -n 1 is_stable
+    read is_stable
     is_stable=${is_stable:-y}
 
     # 转换为小写并使用 if 语句判断
@@ -239,7 +239,7 @@ fetch_config() {
     else
         prompt "default sub link:"
         prompt "use default? [Y/n]:"
-        read -n 1 sub_choice
+        read sub_choice
     fi
 
     sub_choice=${sub_choice:-y}
@@ -282,7 +282,7 @@ fetch_config() {
 
 remove_sb() {
     prompt "remove sing-box-shell and other config? [Y/n]"
-    read -n 1 choice
+    read choice
     choice=${choice:-y}
     case "$choice" in
         [Yy])
