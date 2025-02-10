@@ -342,6 +342,7 @@ remove_sb() {
 create_main_menu(){
     echo -e "${PURPLE}+===+==============================================+${RESET}"
     echo -e "${PURPLE}                   $1                ${RESET}"
+    echo -e "${CYAN}  $1 ${WHITE}|              ${CYAN}$2          ${RESET}"
     echo -e "${PURPLE}+===+==============================================+${RESET}"
 }
 create_menu(){
@@ -357,16 +358,16 @@ check_config
 while true; do
 
   
-    create_main_menu "🏠 Main menu"
-    create_menu 1 "🍉 Install sing-box"
-    create_menu 2 "🍒 Update sing-box"
-    create_menu 3 "🍊 Update config"
-    create_menu 4 "🌽 Start sing-box"
-    create_menu 5 "🥝 Stop sing-box"
-    create_menu 6 "🥭 Status sing-box"
-    create_menu 7 "🍋 Remove sing-box"
-    create_menu 8 "🍈 Update shell"
-    create_menu 0 "🍑 Exit shell"
+    create_main_menu 🏠 "Main menu"
+    create_menu 🍉 "1. Install sing-box"
+    create_menu 🍒 "2. Update sing-box"
+    create_menu 🍊 "3. Update config"
+    create_menu 🌽 "4. Start sing-box"
+    create_menu 🥝 "5. Stop sing-box"
+    create_menu 🥭 "6. Status sing-box"
+    create_menu 🍋 "7. Remove sing-box"
+    create_menu 🍈 "8. Update shell"
+    create_menu 🍑 "0. Exit shell"
 
 
     # 提示用户输入
