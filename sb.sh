@@ -110,17 +110,18 @@ install() {
     read is_stable
     is_stable=${is_stable:-y}
 
-    # 转换为小写并使用 if 语句判断
-    if [[ "${is_stable,,}" == "y" ]]; then
-        info "downloading stable version."
-        download_url=$latest_stable_linux_amd64_url
-    elif [[ "${is_stable,,}" == "n" ]]; then
-        info "downloading beta version."
-        download_url=$latest_beta_linux_amd64_url
+    case "$is_stable" in
+        [Nn])
+            info "downloading beta version."
+            download_url=$latest_beta_linux_amd64_url
+        ;;
+        # 默认稳定版
+        *)
+            info "downloading stable version."
+            download_url=$latest_stable_linux_amd64_url
+        ;;
+    esac
 
-    else
-        warn "invalid input, please input 'y' or 'n'."
-    fi
     
     # ====================================下载解压====================================
     file_name=$(basename "$download_url")
@@ -233,38 +234,62 @@ fetch_config() {
     fi
     source $share
 
-    if [ -z "$config_url" ]; then
-        prompt "please input sub link:"
-        read config_url
-    else
-        prompt "default sub link:"
-        prompt "use default? [Y/n]:"
-        read sub_choice
-    fi
+
+    prompt "default sub link: $config_url"
+    prompt "use default? [Y/n]:"
+    read sub_choice
+  
 
     sub_choice=${sub_choice:-y}
 
-    # 转换为小写并使用 if 语句判断
-    if [[ "${sub_choice,,}" == "y" ]]; then
-        :
-        # 在这里执行使用默认链接的操作
-    elif [[ "${sub_choice,,}" == "n" ]]; then
-        # 在这里执行不使用默认链接的操作
-        prompt "please input sub link:"
-        read config_url_temp
-        # 检查 share.txt 是否已经有 config_url
-        if grep -q '^config_url=' $share; then
-            # 替换已有的 config_url
-            sed -i 's|^config_url=.*|config_url="'"$config_url_temp"'"|' $share
-        else
-            # 追加新变量到 share.txt
-            echo "config_url=\"$config_url_temp\"" >> $share
-        fi
-        source $share
 
-    else
-        warn "invalid input, please input 'y' or 'n'."
-    fi
+    case "$sub_choice" in
+        [Yy])
+            #todo 检查链接是否有效
+            case "$config_url" in
+                http*) 
+                ;;
+                *)
+                    prompt "config_url invalid."
+                    return
+                ;;
+            esac
+        ;;
+       
+        [Nn])
+            # 在这里执行不使用默认链接的操作
+            prompt "please input sub link:"
+            read config_url
+            #todo 检查链接是否有效
+            case "$config_url" in
+                http*) 
+                    # 覆盖所有内容到 share.txt
+                    echo "config_url=\"$config_url_temp\"" > $share
+                    source $share
+                ;;
+                *)
+                    prompt "config_url invalid."
+                    return
+                ;;
+            esac
+
+            
+        ;;
+        *)
+           prompt "not a valid input, please input N/n or Y/y" 
+           return
+    esac
+
+    # # 转换为小写并使用 if 语句判断
+    # if [[ "${sub_choice,,}" == "y" ]]; then
+    #     :
+    #     # 在这里执行使用默认链接的操作
+    # elif [[ "${sub_choice,,}" == "n" ]]; then
+        
+
+    # else
+    #     warn "invalid input, please input 'y' or 'n'."
+    # fi
 
     #  curl 拉取配置文件 
     info "using curl to fetch the config.json."
