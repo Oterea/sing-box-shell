@@ -5,8 +5,8 @@
 
 UNDERLINE="$(tput smul 2>/dev/null || printf '')"
 RED="$(tput setaf 1 2>/dev/null || printf '')"
-# GREEN="$(tput setaf 2 2>/dev/null || printf '')"
-GREEN='\033[32m'
+GREEN="$(tput setaf 2 2>/dev/null || printf '')"
+# GREEN='\033[32m'
 YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
 BLUE="$(tput setaf 4 2>/dev/null || printf '')"
 PURPLE="$(tput setaf 5 2>/dev/null || printf '')"
@@ -30,15 +30,15 @@ info() {
     printf '%b\n' "${GREEN}INFO:${RESET} $*"
 }
 warn() {
-    printf '%s\n' "${YELLOW}> WARN:${RESET} $*"
+    printf '%s\n' "${YELLOW}WARN:${RESET} $*"
 }
 
 error() {
-    printf '%s\n' "${RED}> ERROR:${RESET} $*"
+    printf '%s\n' "${RED}ERROR:${RESET} $*"
 }
 
 prompt() {
-    printf '%s\n' "${CYAN}? PROMPT:${RESET} $*"
+    printf '%s\n' "${CYAN}PROMPT:${RESET} $*"
 }
 
 get_latest_version() {
