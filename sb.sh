@@ -4,11 +4,9 @@
 
 
 BOLD="$(tput bold 2>/dev/null || printf '')"
-GREY="$(tput setaf 8 2>/dev/null || printf '')"
 UNDERLINE="$(tput smul 2>/dev/null || printf '')"
 RED="$(tput setaf 1 2>/dev/null || printf '')"
-# GREEN="$(tput setaf 2 2>/dev/null || printf '')"
-GREEN="\033[32m"
+GREEN="$(tput setaf 2 2>/dev/null || printf '')"
 YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
 BLUE="$(tput setaf 4 2>/dev/null || printf '')"
 PURPLE="$(tput setaf 5 2>/dev/null || printf '')"
@@ -29,14 +27,18 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%b\n' "${BOLD}${GREEN}INFO:${RESET} $*"
+    printf '%s\n' "${BOLD}${GREEN}> INFO:${RESET} $*"
 }
 warn() {
-    printf '%s\n' "${BOLD}${GREY}>${RESET} ${YELLOW}WARN:${RESET} $*"
+    printf '%s\n' "${BOLD}${YELLOW}> WARN:${RESET} $*"
 }
 
 error() {
-    printf '%s\n' "${BOLD}${GREY}>${RESET} ${RED}ERROR:${RESET} $*"
+    printf '%s\n' "${BOLD}${RED}> ERROR:${RESET} $*"
+}
+
+prompt() {
+    printf '%s\n' "${BOLD}${CYAN}? PROMPT:${RESET} $*"
 }
 
 get_latest_version() {
@@ -104,7 +106,7 @@ check_installed_version() {
 
 install() {
     # 提示用户输入
-    echo -e "${CYAN}🧭 PROMPT: install stable version? [Y/n]: ${RESET}"
+    prompt "install stable version? [Y/n]:"
     read -n 1 is_stable
     is_stable=${is_stable:-y}
 
@@ -232,11 +234,11 @@ fetch_config() {
     source $share
 
     if [ -z "$config_url" ]; then
-        echo -e "${CYAN}🧭 PROMPT: please input sub link: ${RESET}"
+        prompt "please input sub link:"
         read config_url
     else
-        echo -e "${CYAN}🧭 PROMPT: default sub link: $config_url${RESET}"
-        echo -e "${CYAN}🧭 PROMPT: use default? [Y/n]: ${RESET}"
+        prompt "default sub link:"
+        prompt "use default? [Y/n]:"
         read -n 1 sub_choice
     fi
 
@@ -248,7 +250,7 @@ fetch_config() {
         # 在这里执行使用默认链接的操作
     elif [[ "${sub_choice,,}" == "n" ]]; then
         # 在这里执行不使用默认链接的操作
-        echo -e "${CYAN}🧭 PROMPT: please input sub link: ${RESET}"
+        prompt "please input sub link:"
         read config_url_temp
         # 检查 share.txt 是否已经有 config_url
         if grep -q '^config_url=' $share; then
@@ -317,7 +319,7 @@ while true; do
 
 
     # 提示用户输入
-    echo -e "${CYAN}🧭 PROMPT: Please enter the number: ${RESET}"
+    prompt "please enter the number:"
     read -n 1 choice
     echo
 
