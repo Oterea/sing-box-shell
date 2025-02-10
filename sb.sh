@@ -41,6 +41,27 @@ prompt() {
     printf '%s\n' "${CYAN}PROMPT:${RESET} $*"
 }
 
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<检查工具<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+missing_tools=""
+check_tools() {
+    tool_name="$1"
+    # 使用 command -v 来检查工具是否存在
+    if ! command -v "$tool_name" > /dev/null 2>&1; then
+        missing_tools="$missing_tools $tool_name"
+    fi
+}
+check_tools "curl"
+check_tools "tar"
+check_tools "jq"
+
+
+# 如果有工具没有安装，提示并退出
+if [ -n "$missing_tools" ]; then
+    error "the following tools are missing: $missing_tools, please install them and try again."
+    exit
+fi
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>检查工具>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
 get_latest_version() {
     # ====================================获取最新版本下载链接====================================
     latest_beta_v=""
@@ -170,7 +191,7 @@ install() {
   
     # 检查sb.service 文件是否存在，若存在则覆盖
     if [ -f "$service" ]; then
-        warn "The file $service already exists. It will be overwritten."
+        warn "the file $service already exists. it will be overwritten."
     fi
 
     # 创建 sb.service 文件并写入内容，直接覆盖内容
@@ -280,22 +301,10 @@ fetch_config() {
            return
     esac
 
-    # # 转换为小写并使用 if 语句判断
-    # if [[ "${sub_choice,,}" == "y" ]]; then
-    #     :
-    #     # 在这里执行使用默认链接的操作
-    # elif [[ "${sub_choice,,}" == "n" ]]; then
-        
-
-    # else
-    #     warn "invalid input, please input 'y' or 'n'."
-    # fi
-
     #  curl 拉取配置文件 
     info "using curl to fetch the config.json."
     curl --progress-bar -o "$config_file" -L "$config_url" # 直接覆盖目标文件
     
-
     # 检查写入是否成功
     check_config
     status=$? 
