@@ -9,7 +9,7 @@ config_url=""
 work_dir="$HOME/sing-box"
 
 
-# 检查curl下载工具
+# 检查curl下载工具a
 if command -v curl >/dev/null 2>&1; then
     echo -e "${GREEN}INFO: curl is installed${RESET}"
 else

@@ -28,7 +28,7 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%s\n' "${BOLD}${GREEN}INFO: ${RESET} $*"
+    printf '%s\n' "${BOLD}${GREY}>${GREEN}INFO: ${RESET} $*"
 }
 
 get_latest_version() {
