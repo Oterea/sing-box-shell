@@ -357,7 +357,7 @@ check_config
 while true; do
 
   
-    create_main_menu 🏠 "Main menu"
+    create_main_menu 🏠 "Main Menu"
     create_menu 🍉 "1. Install sing-box"
     create_menu 🍒 "2. Update sing-box"
     create_menu 🍊 "3. Update config"
