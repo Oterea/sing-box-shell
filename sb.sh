@@ -264,7 +264,7 @@ fetch_config() {
             case "$config_url" in
                 http*) 
                     # 覆盖所有内容到 share.txt
-                    echo "config_url=\"$config_url_temp\"" > $share
+                    echo "config_url=\"$config_url\"" > $share
                     source $share
                 ;;
                 *)
