@@ -385,20 +385,16 @@ check_config
 while true; do
 
   
-    create_main_menu 🏠 "➤  Main Menu"
-    create_menu 🍉 "1. Install sing-box"
-    create_menu 🍒 "2. Update sing-box"
-    create_menu 🍊 "3. Update config"
-    create_menu 🌽 "4. Start sing-box"
-    create_menu 🥝 "5. Stop sing-box"
-    create_menu 🥭 "6. Status sing-box"
-    create_menu 🍋 "7. Remove sing-box"
-    create_menu 🍈 "8. Update shell"
-    create_menu 🍑 "0. Exit shell"
-
-
-
-
+    # create_main_menu 🏠 "➤  Main Menu"
+    # create_menu 🍉 "1. Install sing-box"
+    # create_menu 🍒 "2. Update sing-box"
+    # create_menu 🍊 "3. Update config"
+    # create_menu 🌽 "4. Start sing-box"
+    # create_menu 🥝 "5. Stop sing-box"
+    # create_menu 🥭 "6. Status sing-box"
+    # create_menu 🍋 "7. Remove sing-box"
+    # create_menu 🍈 "8. Update shell"
+    # create_menu 🍑 "0. Exit shell"
 
 
     json_data=$(curl -s ipinfo.io)  # 只发起一次请求并存储 JSON
