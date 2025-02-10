@@ -3,10 +3,10 @@
 
 
 
-BOLD="$(tput bold 2>/dev/null || printf '')"
 UNDERLINE="$(tput smul 2>/dev/null || printf '')"
 RED="$(tput setaf 1 2>/dev/null || printf '')"
-GREEN="$(tput setaf 2 2>/dev/null || printf '')"
+# GREEN="$(tput setaf 2 2>/dev/null || printf '')"
+GREEN='\033[32m'
 YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
 BLUE="$(tput setaf 4 2>/dev/null || printf '')"
 PURPLE="$(tput setaf 5 2>/dev/null || printf '')"
@@ -27,7 +27,7 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%s\n' "${GREEN}> INFO:${RESET} $*"
+    printf '%b\n' "${GREEN}> INFO:${RESET} $*"
 }
 warn() {
     printf '%s\n' "${YELLOW}> WARN:${RESET} $*"
