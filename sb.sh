@@ -403,10 +403,11 @@ while true; do
     status=$(systemctl is-active sb)
 
 
+
     create_main_menu  "🏠   Main Menu"
-    create_menu "🍉   1. Install sing-box"  "🍒   2. Update sing-box"
-    create_menu "🍊   3. Update config"     "🌽   4. Start sing-box"
-    create_menu "🥝   5. Stop sing-box"     "🥭   6. Status sing-box"
+    create_menu "🌽   1. Start sing-box"    "🥝   2. Stop sing-box"
+    create_menu "🍊   3. Update config"     "🍒   4. Update sing-box"
+    create_menu "🍉   5. Install sing-box"  "🥭   6. Status sing-box"
     create_menu "🍋   7. Remove sing-box"   "🍈   8. Update shell"
     create_menu "🍑   0. Exit shell"
     create_info_menu "IP: $ip, Country: $country, Status: $status"
@@ -419,15 +420,15 @@ while true; do
 
     case $choice in
 
-        1)  
-            create_main_menu 🍉 "1. Install sing-box"
+        5)  
+            create_main_menu 🍉 "5. Install sing-box"
             info "fetching version data."
             get_latest_version
             install
             fetch_config
             ;;
-        2)  
-            create_main_menu 🍒 "2. Update sing-box"
+        4)  
+            create_main_menu 🍒 "4. Update sing-box"
             info "fetching version data."
             get_latest_version
             check_installed_version
@@ -438,7 +439,7 @@ while true; do
             create_main_menu 🍊 "3. Update config"
             fetch_config
             ;;
-        4)  
+        1)  
             # 检查 sing-box 和 config
             check_config
             status=$? 
@@ -451,7 +452,7 @@ while true; do
 
 
             ;;
-        5)  
+        2)  
             # 检查 sing-box 和 config
             check_config
             status=$?  # 获取返回值
