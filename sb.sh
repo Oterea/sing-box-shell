@@ -499,7 +499,7 @@ while true; do
         9)
             # reload
             continue
-
+            ;;
         0)
             info "exit sing-box shell successfully."
             exit
