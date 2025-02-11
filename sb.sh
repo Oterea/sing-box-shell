@@ -409,7 +409,7 @@ while true; do
     create_menu "🍊   3. Update config"     "🍒   4. Update sing-box"
     create_menu "🍉   5. Install sing-box"  "🥭   6. Status sing-box"
     create_menu "🍋   7. Remove sing-box"   "🍈   8. Update shell"
-    create_menu "🍑   0. Exit shell"
+    create_menu "🍋   9. Reload status"   "🍑   0. Exit shell"
     create_info_menu "IP: $ip, Country: $country, Status: $status"
 
 
@@ -453,6 +453,7 @@ while true; do
 
             ;;
         2)  
+            # stop
             # 检查 sing-box 和 config
             check_config
             status=$?  # 获取返回值
@@ -486,7 +487,7 @@ while true; do
             
             ;;
         8)  
-            
+            # update shell
             remove_sb
             curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
             sudo chmod +x sb.sh
@@ -495,6 +496,9 @@ while true; do
             info "sing-box-shell updated successfully."
             exit
             ;;
+        9)
+            # reload
+            continue
 
         0)
             info "exit sing-box shell successfully."
