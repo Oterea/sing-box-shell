@@ -8,7 +8,13 @@ exec="/usr/local/bin/sb"
 # work_dir="$HOME/sing-box"
 
 
-
+# 检查 /usr/local/bin/ 是否存在，不存在则创建
+if [ ! -d "/usr/local/bin" ]; then
+    echo "Directory /usr/local/bin/ does not exist. Creating it now..."
+    sudo mkdir -p /usr/local/bin
+    sudo chmod 755 /usr/local/bin
+    echo "Directory /usr/local/bin/ created."
+fi
 
 # # 删除旧的 sing-box
 # remove_sb() {
