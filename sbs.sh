@@ -307,9 +307,9 @@ install_config() {
 }
 
 remove_sbs() {
-    prompt "remove sing-box-shell and other config? [Y/n]:"
+    prompt "remove sing-box-shell and other config? [y/N]:"
     read choice
-    choice=${choice:-y}
+    choice=${choice:-N}
     case "$choice" in
     [Yy])
         cd
