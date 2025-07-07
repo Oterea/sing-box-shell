@@ -55,6 +55,11 @@ if [ -n "$missing_tools" ]; then
 fi
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>检查工具>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
+# 创建工作目录（如果不存在）
+if [ ! -d "$work_dir" ]; then
+    mkdir -p "$work_dir"
+fi
+
 get_latest_version() {
     # ====================================获取最新版本下载链接====================================
     latest_beta_v=""
@@ -165,11 +170,6 @@ install_singbox() {
         download_url=$latest_stable_linux_amd64_url
         ;;
     esac
-
-    # 创建工作目录（如果不存在）
-    if [ ! -d "$work_dir" ]; then
-        mkdir -p "$work_dir"
-    fi
 
     # ====================================下载解压====================================
     file_name=$(basename "$download_url")
