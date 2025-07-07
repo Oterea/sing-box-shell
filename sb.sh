@@ -250,7 +250,7 @@ fetch_config() {
     fi
     source $share
 
-    prompt "default sub link: $config_url"
+    prompt "default sub link: $config_url \n"
     prompt "use default? [Y/n]:"
     read sub_choice
 
