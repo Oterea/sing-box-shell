@@ -373,17 +373,6 @@ check_config
 # 一级菜单
 while true; do
 
-    # create_main_menu 🏠 "➤  Main Menu"
-    # create_menu 🍉 "1. Install sing-box"
-    # create_menu 🍒 "2. Update sing-box"
-    # create_menu 🍊 "3. Update config"
-    # create_menu 🌽 "4. Start sing-box"
-    # create_menu 🥝 "5. Stop sing-box"
-    # create_menu 🥭 "6. Status sing-box"
-    # create_menu 🍋 "7. Remove sing-box"
-    # create_menu 🍈 "8. Update shell"
-    # create_menu 🍑 "0. Exit shell"
-
     json_data=$(curl -s ipinfo.io) # 只发起一次请求并存储 JSON
     ip=$(echo "$json_data" | jq -r '.ip')
     country=$(echo "$json_data" | jq -r '.country')
@@ -405,25 +394,25 @@ while true; do
     case $choice in
 
     5)
-        create_main_menu 🍉 "5. Install sing-box"
+        info "5. Installing sing-box"
         info "fetching version data."
         get_latest_version
         install
         fetch_config
         ;;
     4)
-        create_main_menu 🍒 "4. Update sing-box"
+        info "4. Updating sing-box"
         info "fetching version data."
         get_latest_version
         check_installed_version
         install
         ;;
     3)
-
-        create_main_menu 🍊 "3. Update config"
+        info "3. Updating config"
         fetch_config
         ;;
     1)
+        info "1. Starting sing-box"
         # 检查 sing-box 和 config
         check_config
         status=$?
@@ -436,6 +425,8 @@ while true; do
 
         ;;
     2)
+        info "2. Stopping sing-box"
+
         # stop
         # 检查 sing-box 和 config
         check_config
@@ -450,6 +441,7 @@ while true; do
 
         ;;
     6)
+        info "6. Checking sing-box status"
         # status
         check_config
         status=$? # 获取返回值
@@ -464,11 +456,13 @@ while true; do
 
         ;;
     7)
+        info "7. Removing sing-box"
         remove_sb
         exit
 
         ;;
     8)
+        info "8. Updating sing-box-shell"
         # update shell
         remove_sb
         curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
@@ -479,11 +473,13 @@ while true; do
         exit
         ;;
     9)
+        info "9. Reloading sing-box-shell"
         # reload
         continue
         ;;
     0)
-        info "exit sing-box shell successfully."
+        info "0. Exiting sing-box-shell"
+        info "exit sing-box-shell successfully."
         exit
         ;;
     *)
