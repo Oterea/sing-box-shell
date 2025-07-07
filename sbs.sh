@@ -122,7 +122,37 @@ check_installed_version() {
 
 }
 
-install() {
+check_config() {
+
+    check_installed_version
+    status=$?
+
+    if [ $status -eq 0 ]; then
+        if [ -e "$config_file" ]; then
+
+            output=$($work_dir/sing-box check -c $config_file 2>&1)
+
+            if [ -z "$output" ]; then
+                info "config.json is correct."
+                return 0
+
+            else
+                error "config.json is not correct."
+                echo "$output"
+                return 1
+            fi
+
+        else
+            error "config.json is not exist."
+            return 1
+        fi
+    else
+        return 1
+    fi
+
+}
+
+install_singbox() {
     # 提示用户输入
     prompt "install stable version? [Y/n]:"
     read is_stable
@@ -213,37 +243,7 @@ install() {
     fi
 }
 
-check_config() {
-
-    check_installed_version
-    status=$?
-
-    if [ $status -eq 0 ]; then
-        if [ -e "$config_file" ]; then
-
-            output=$($work_dir/sing-box check -c $config_file 2>&1)
-
-            if [ -z "$output" ]; then
-                info "config.json is correct."
-                return 0
-
-            else
-                error "config.json is not correct."
-                echo "$output"
-                return 1
-            fi
-
-        else
-            error "config.json is not exist."
-            return 1
-        fi
-    else
-        return 1
-    fi
-
-}
-
-fetch_config() {
+install_config() {
     # 文件不存在则写入，存在就不管
     if [ ! -e "$share" ]; then
         echo "config_url=$config_url" >>"$share"
@@ -335,17 +335,17 @@ if [[ $# -gt 0 ]]; then
 
     case "$cmd" in
     install)
-        info "Installing sing-box..."
+        info "Installing sing-box and config..."
         get_latest_version
-        install
-        fetch_config
+        install_singbox
+        install_config
         exit
         ;;
     update)
         case "$subcmd" in
         config)
             info "Updating config..."
-            fetch_config
+            install_config
             ;;
         sbs)
             info "Updating sing-box-shell..."
@@ -359,7 +359,7 @@ if [[ $# -gt 0 ]]; then
             info "Updating sing-box..."
             get_latest_version
             check_installed_version
-            install
+            install_singbox
             ;;
         esac
         exit
@@ -395,7 +395,7 @@ if [[ $# -gt 0 ]]; then
     *)
         warn "Unknown command: $cmd"
         info "Usage:"
-        info "  sbs install             # Install sing-box"
+        info "  sbs install             # Install sing-box and config"
         info "  sbs update              # Update sing-box"
         info "  sbs update config       # Update config"
         info "  sbs update sbs          # Update sbs"
