@@ -14,8 +14,8 @@ RESET="$(tput sgr0 2>/dev/null || printf '')"
 
 proxy="https://github.oterea.top"
 work_dir="$HOME/sing-box"
-exec="/usr/local/bin/sb"
-service="/etc/systemd/system/sb.service"
+exec="/usr/local/bin/sbs"
+service="/etc/systemd/system/sbs.service"
 share="$work_dir/share.txt"
 
 config_file="$work_dir/config.json" # 保存为 config.json 文件
@@ -180,16 +180,16 @@ install() {
     fi
     # 删除源文件
     rm "$work_dir/$file_name"
-    # ====================================设置sb.service====================================
+    # ====================================设置sbs.service====================================
     # 提取版本信息
     check_installed_version
 
-    # 检查sb.service 文件是否存在，若存在则覆盖
+    # 检查sbs.service 文件是否存在，若存在则覆盖
     if [ -f "$service" ]; then
         warn "the file $service already exists. it will be overwritten."
     fi
 
-    # 创建 sb.service 文件并写入内容，直接覆盖内容
+    # 创建 sbs.service 文件并写入内容，直接覆盖内容
     echo "[Unit]
     Description=$version
     After=network.target
@@ -208,7 +208,7 @@ install() {
         # 重新加载 systemd 配置
         sudo systemctl daemon-reload
     else
-        error "failed to create sb.service file."
+        error "failed to create sbs.service file."
         break
     fi
 }
@@ -305,7 +305,7 @@ fetch_config() {
     fi
 }
 
-remove_sb() {
+remove_sbs() {
     prompt "remove sing-box-shell and other config? [Y/n]:"
     read choice
     choice=${choice:-y}
@@ -313,7 +313,7 @@ remove_sb() {
     [Yy])
         cd
         if [ -e "$service" ]; then
-            sudo systemctl stop sb
+            sudo systemctl stop sbs
         fi
 
         sudo rm -rf $work_dir
@@ -328,16 +328,6 @@ remove_sb() {
     esac
 
 }
-
-# create_main_menu(){
-#     echo -e "${PURPLE}+===================================+${RESET}"
-#     echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
-#     echo -e "${PURPLE}+===================================+${RESET}"
-# }
-# create_menu(){
-#     echo -e "${CYAN}     $1   ${CYAN}$2          ${RESET}"
-#     echo -e "${WHITE}+-----------------------------------+${RESET}"
-# }
 
 # 37
 line="+-----------------------------------+"
@@ -370,13 +360,92 @@ create_info_menu() {
 
 check_config
 
+if [[ $# -gt 0 ]]; then
+    cmd="$1"
+    subcmd="$2"
+
+    case "$cmd" in
+    install)
+        info "Installing sing-box..."
+        get_latest_version
+        install
+        fetch_config
+        exit
+        ;;
+    update)
+        case "$subcmd" in
+        config)
+            info "Updating config..."
+            fetch_config
+            ;;
+        sbs)
+            info "Updating sing-box-shell..."
+            remove_sbs
+            curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
+            sudo chmod +x sbs.sh
+            sudo mv -f sbs.sh /usr/local/bin/sbs
+            info "sing-box-shell updated successfully."
+            ;;
+        *)
+            info "Updating sing-box..."
+            get_latest_version
+            check_installed_version
+            install
+            ;;
+        esac
+        exit
+        ;;
+    start)
+        check_config
+        if [ $? -eq 0 ]; then
+            sudo systemctl start sbs
+            info "sing-box started successfully."
+        fi
+        exit
+        ;;
+    stop)
+        check_config
+        if [ $? -eq 0 ]; then
+            sudo systemctl stop sbs
+            info "sing-box stopped successfully."
+        fi
+        exit
+        ;;
+    status)
+        check_config
+        if [ $? -eq 0 ]; then
+            sudo systemctl status sbs
+            curl ipinfo.io
+        fi
+        exit
+        ;;
+    remove)
+        remove_sbs
+        exit
+        ;;
+    *)
+        warn "Unknown command: $cmd"
+        info "Usage:"
+        info "  sbs install             # Install sing-box"
+        info "  sbs update              # Update sing-box"
+        info "  sbs update config       # Update config"
+        info "  sbs update sbs          # Update sbs"
+        info "  sbs start               # Start sing-box"
+        info "  sbs stop                # Stop sing-box"
+        info "  sbs status              # Check status"
+        info "  sbs remove              # Uninstall everything"
+        exit 1
+        ;;
+    esac
+fi
+
 # 一级菜单
 while true; do
 
     json_data=$(curl -s ipinfo.io) # 只发起一次请求并存储 JSON
     ip=$(echo "$json_data" | jq -r '.ip')
     country=$(echo "$json_data" | jq -r '.country')
-    status=$(systemctl is-active sb)
+    status=$(systemctl is-active sbs)
 
     create_main_menu "🏠   Main Menu"
     create_menu "🌽   1. Start sing-box" "🥝   2. Stop sing-box"
@@ -417,7 +486,7 @@ while true; do
         check_config
         status=$?
         if [ $status -eq 0 ]; then
-            sudo systemctl start sb
+            sudo systemctl start sbs
             info "sing-box started successfully."
         else
             continue
@@ -433,7 +502,7 @@ while true; do
         status=$? # 获取返回值
 
         if [ $status -eq 0 ]; then
-            sudo systemctl stop sb
+            sudo systemctl stop sbs
             info "sing-box stoped successfully."
         else
             continue
@@ -447,7 +516,7 @@ while true; do
         status=$? # 获取返回值
 
         if [ $status -eq 0 ]; then
-            sudo systemctl status sb
+            sudo systemctl status sbs
             curl ipinfo.io
             echo
         else
@@ -457,18 +526,18 @@ while true; do
         ;;
     7)
         info "7. Removing sing-box"
-        remove_sb
+        remove_sbs
         exit
 
         ;;
     8)
         info "8. Updating sing-box-shell"
         # update shell
-        remove_sb
-        curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
-        sudo chmod +x sb.sh
+        remove_sbs
+        curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
+        sudo chmod +x sbs.sh
 
-        sudo mv -f sb.sh /usr/local/bin/sb
+        sudo mv -f sbs.sh /usr/local/bin/sbs
         info "sing-box-shell updated successfully."
         exit
         ;;

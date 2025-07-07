@@ -3,7 +3,7 @@ RESET='\033[0m' # 重置颜色
 YELLOW='\033[33m'
 # 定义变量
 # service="/etc/systemd/system/sb.service"
-exec="/usr/local/bin/sb"
+exec="/usr/local/bin/sbs"
 # 定义工作文件夹
 # work_dir="$HOME/sing-box"
 
@@ -37,8 +37,8 @@ fi
 # # fi
 # remove_sb
 
-curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
-sudo chmod +x sb.sh
+curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
+sudo chmod +x sbs.sh
 
-sudo mv -f sb.sh $exec
+sudo mv -f sbs.sh $exec
 echo -e "${GREEN}INFO: sing-box-shell has been successfully installed to ${exec}.${RESET}"
