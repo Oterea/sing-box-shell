@@ -341,78 +341,82 @@ help() {
     info "  sbs remove              # Uninstall everything"
 }
 
-if [[ $# -gt 0 ]]; then
-    cmd="$1"
-    subcmd="$2"
+# 如果没有参数，打印帮助
+if [ $# -eq 0 ]; then
+    help
+    exit 0
+fi
 
-    case "$cmd" in
-    install)
-        info "installing sing-box and config..."
-        get_latest_version
-        install_singbox
+cmd="$1"
+subcmd="$2"
+
+case "$cmd" in
+install)
+    info "installing sing-box and config..."
+    get_latest_version
+    install_singbox
+    install_config
+    exit
+    ;;
+update)
+    case "$subcmd" in
+    config)
+        info "updating config..."
         install_config
-        exit
         ;;
-    update)
-        case "$subcmd" in
-        config)
-            info "updating config..."
-            install_config
-            ;;
-        sbs)
-            info "updating sing-box-shell..."
-            remove_sbs
-            curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
-            sudo chmod +x sbs.sh
-            sudo mv -f sbs.sh /usr/local/bin/sbs
-            info "sing-box-shell updated successfully."
-            ;;
-        *)
-            info "updating sing-box..."
-            get_latest_version
-            check_installed_version
-            install_singbox
-            ;;
-        esac
-        exit
-        ;;
-    start)
-        check_config
-        if [ $? -eq 0 ]; then
-            sudo systemctl start sbs
-            info "sing-box started successfully."
-        fi
-        exit
-        ;;
-    stop)
-        check_config
-        if [ $? -eq 0 ]; then
-            sudo systemctl stop sbs
-            info "sing-box stopped successfully."
-        fi
-        exit
-        ;;
-    status)
-        check_config
-        if [ $? -eq 0 ]; then
-            sudo systemctl status sbs
-            curl ipinfo.io
-        fi
-        exit
-        ;;
-    remove)
+    sbs)
+        info "updating sing-box-shell..."
         remove_sbs
-        info "sbs removed successfully."
-        exit
-        ;;
-    help)
-        help
-        exit
+        curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
+        sudo chmod +x sbs.sh
+        sudo mv -f sbs.sh /usr/local/bin/sbs
+        info "sing-box-shell updated successfully."
         ;;
     *)
-        warn "unknown command: $cmd"
-        help
-        exit 1
+        info "updating sing-box..."
+        get_latest_version
+        check_installed_version
+        install_singbox
         ;;
     esac
-fi
+    exit
+    ;;
+start)
+    check_config
+    if [ $? -eq 0 ]; then
+        sudo systemctl start sbs
+        info "sing-box started successfully."
+    fi
+    exit
+    ;;
+stop)
+    check_config
+    if [ $? -eq 0 ]; then
+        sudo systemctl stop sbs
+        info "sing-box stopped successfully."
+    fi
+    exit
+    ;;
+status)
+    check_config
+    if [ $? -eq 0 ]; then
+        sudo systemctl status sbs
+        curl ipinfo.io
+    fi
+    exit
+    ;;
+remove)
+    remove_sbs
+    info "sbs removed successfully."
+    exit
+    ;;
+help)
+    help
+    exit
+    ;;
+*)
+    warn "unknown command: $cmd"
+    help
+    exit 1
+    ;;
+esac
