@@ -36,7 +36,7 @@ error() {
 }
 
 prompt() {
-    printf '%b ' "${CYAN}PROMPT:${RESET} $*"
+    printf '%s\n' "${CYAN}PROMPT:${RESET} $*"
 }
 
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<检查工具<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -250,7 +250,7 @@ install_config() {
     fi
     source $share
 
-    prompt "default sub link: $config_url \n"
+    prompt "default sub link: $config_url"
     prompt "use default? [Y/n]:"
     read sub_choice
 
