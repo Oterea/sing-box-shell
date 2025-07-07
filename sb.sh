@@ -262,7 +262,7 @@ fetch_config() {
         case "$config_url" in
         http*) ;;
         *)
-            prompt "config_url invalid."
+            error "config_url invalid."
             return
             ;;
         esac
@@ -280,14 +280,14 @@ fetch_config() {
             source $share
             ;;
         *)
-            prompt "config_url invalid."
+            error "config_url invalid."
             return
             ;;
         esac
 
         ;;
     *)
-        prompt "not a valid input, please input N/n or Y/y"
+        warn "not a valid input, please input N/n or Y/y"
         return
         ;;
     esac
