@@ -35,9 +35,9 @@ fi
 # # else
 # #     echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
 # # fi
-# remove_sb
+# remove_sbs
 
-curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
+curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
 sudo chmod +x sbs.sh
 
 sudo mv -f sbs.sh $exec
