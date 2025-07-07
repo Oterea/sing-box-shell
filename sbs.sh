@@ -20,10 +20,6 @@ share="$work_dir/share.txt"
 
 config_file="$work_dir/config.json" # 保存为 config.json 文件
 
-# 创建目标目录（如果不存在）
-if [ ! -d "$work_dir" ]; then
-    mkdir -p "$work_dir"
-fi
 info() {
     printf '%s\n' "${GREEN}[info]:${RESET} $*"
 }
@@ -169,6 +165,11 @@ install_singbox() {
         download_url=$latest_stable_linux_amd64_url
         ;;
     esac
+
+    # 创建工作目录（如果不存在）
+    if [ ! -d "$work_dir" ]; then
+        mkdir -p "$work_dir"
+    fi
 
     # ====================================下载解压====================================
     file_name=$(basename "$download_url")
