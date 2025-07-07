@@ -306,7 +306,7 @@ fetch_config() {
 }
 
 remove_sb() {
-    prompt "remove sing-box-shell and other config? [Y/n]"
+    prompt "remove sing-box-shell and other config? [Y/n]:"
     read choice
     choice=${choice:-y}
     case "$choice" in
