@@ -1,11 +1,10 @@
+#!/bin/bash
+# 定义颜色变量
 GREEN='\033[32m'
 RESET='\033[0m' # 重置颜色
 YELLOW='\033[33m'
-# 定义变量
-# service="/etc/systemd/system/sb.service"
+
 exec="/usr/local/bin/sbs"
-# 定义工作文件夹
-# work_dir="$HOME/sing-box"
 
 # 检查 /usr/local/bin/ 是否存在，不存在则创建
 if [ ! -d "/usr/local/bin" ]; then
@@ -14,28 +13,6 @@ if [ ! -d "/usr/local/bin" ]; then
     sudo chmod 755 /usr/local/bin
     echo "Directory /usr/local/bin/ created."
 fi
-
-# # 删除旧的 sing-box
-# remove_sb() {
-#     cd
-#     sudo rm -rf $work_dir
-#     sudo rm -f $service
-#     sudo rm -f $exec
-#     # echo -e "${GREEN}INFO: old sing-box removed successfully.${RESET}"
-# }
-# # echo -e "${GREEN}INFO: remove old sing-box and config? [Y/n].${RESET}"
-# # read -n 1 is_remove
-# # is_remove=${is_remove:-y}
-
-# # # 转换为小写并使用 if 语句判断
-# # if [[ "${is_remove,,}" == "y" ]]; then
-# #     remove_sb
-# # elif [[ "${is_remove,,}" == "n" ]]; then
-# #     :
-# # else
-# #     echo -e "${YELLOW}WARN: invalid input, please input 'y' or 'n'.${RESET}"
-# # fi
-# remove_sbs
 
 curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
 sudo chmod +x sbs.sh

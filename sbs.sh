@@ -25,7 +25,7 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%b\n' "${GREEN}[info]:${RESET} $*"
+    printf '%s\n' "${GREEN}[info]:${RESET} $*"
 }
 warn() {
     printf '%s\n' "${YELLOW}[warn]:${RESET} $*"
@@ -329,6 +329,18 @@ remove_sbs() {
 
 }
 
+help() {
+    info "  Usage:"
+    info "  sbs install             # Install sing-box and config"
+    info "  sbs update              # Update sing-box"
+    info "  sbs update config       # Update config"
+    info "  sbs update sbs          # Update sbs"
+    info "  sbs start               # Start sing-box"
+    info "  sbs stop                # Stop sing-box"
+    info "  sbs status              # Check status"
+    info "  sbs remove              # Uninstall everything"
+}
+
 if [[ $# -gt 0 ]]; then
     cmd="$1"
     subcmd="$2"
@@ -393,17 +405,13 @@ if [[ $# -gt 0 ]]; then
         info "sbs removed successfully."
         exit
         ;;
+    help)
+        help
+        exit
+        ;;
     *)
-        warn "Unknown command: $cmd"
-        info "  Usage:"
-        info "  sbs install             # Install sing-box and config"
-        info "  sbs update              # Update sing-box"
-        info "  sbs update config       # Update config"
-        info "  sbs update sbs          # Update sbs"
-        info "  sbs start               # Start sing-box"
-        info "  sbs stop                # Stop sing-box"
-        info "  sbs status              # Check status"
-        info "  sbs remove              # Uninstall everything"
+        warn "unknown command: $cmd"
+        help
         exit 1
         ;;
     esac
