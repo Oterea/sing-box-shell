@@ -25,18 +25,18 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 info() {
-    printf '%b\n' "${GREEN}INFO:${RESET} $*"
+    printf '%b\n' "${GREEN}[info]:${RESET} $*"
 }
 warn() {
-    printf '%s\n' "${YELLOW}WARN:${RESET} $*"
+    printf '%s\n' "${YELLOW}[warn]:${RESET} $*"
 }
 
 error() {
-    printf '%s\n' "${RED}ERROR:${RESET} $*"
+    printf '%s\n' "${RED}[error]:${RESET} $*"
 }
 
 prompt() {
-    printf '%s\n' "${CYAN}PROMPT:${RESET} $*"
+    printf '%s\n' "${CYAN}[prompt]:${RESET} $*"
 }
 
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<检查工具<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -185,7 +185,7 @@ install_singbox() {
     if [ "$success" -eq 0 ]; then
         info "sing-box downloaded successfully to $work_dir/$file_name."
     else
-        echo -e "${RED}ERROE: File download failed.${RESET}"
+        error "file download failed."
         rm $work_dir/$file_name
         break
     fi
@@ -335,7 +335,7 @@ if [[ $# -gt 0 ]]; then
 
     case "$cmd" in
     install)
-        info "Installing sing-box and config..."
+        info "installing sing-box and config..."
         get_latest_version
         install_singbox
         install_config
@@ -344,11 +344,11 @@ if [[ $# -gt 0 ]]; then
     update)
         case "$subcmd" in
         config)
-            info "Updating config..."
+            info "updating config..."
             install_config
             ;;
         sbs)
-            info "Updating sing-box-shell..."
+            info "updating sing-box-shell..."
             remove_sbs
             curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
             sudo chmod +x sbs.sh
@@ -356,7 +356,7 @@ if [[ $# -gt 0 ]]; then
             info "sing-box-shell updated successfully."
             ;;
         *)
-            info "Updating sing-box..."
+            info "updating sing-box..."
             get_latest_version
             check_installed_version
             install_singbox
@@ -390,11 +390,12 @@ if [[ $# -gt 0 ]]; then
         ;;
     remove)
         remove_sbs
+        info "sbs removed successfully."
         exit
         ;;
     *)
         warn "Unknown command: $cmd"
-        info "Usage:"
+        info "  Usage:"
         info "  sbs install             # Install sing-box and config"
         info "  sbs update              # Update sing-box"
         info "  sbs update config       # Update config"
