@@ -4,9 +4,8 @@ YELLOW='\033[33m'
 # 定义变量
 # service="/etc/systemd/system/sb.service"
 exec="/usr/local/bin/sb"
-    # 定义工作文件夹
+# 定义工作文件夹
 # work_dir="$HOME/sing-box"
-
 
 # 检查 /usr/local/bin/ 是否存在，不存在则创建
 if [ ! -d "/usr/local/bin" ]; then
@@ -38,14 +37,8 @@ fi
 # # fi
 # remove_sb
 
-
-
 curl -o sb.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sb.sh
 sudo chmod +x sb.sh
 
 sudo mv -f sb.sh $exec
-echo -e "${GREEN}INFO: sing-box-shell installed successfully.${RESET}"
-
-
-
-
+echo -e "${GREEN}INFO: sing-box-shell has been successfully installed to ${exec}.${RESET}"
