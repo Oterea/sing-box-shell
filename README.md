@@ -8,6 +8,8 @@ install sing-box and config (see memo)
 ## See Log
 journalctl -u sbs.service -n 10
 
+tail -f singbox.log
+
 ## Help
 sb
 
