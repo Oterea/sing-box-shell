@@ -16,11 +16,13 @@ if [ ! -d "/usr/local/bin" ]; then
 fi
 
 # 脚本源，按优先级排列。SBS_MIRROR 可覆盖（只用指定的那个）
+# 不缓存的排前面：jsDelivr 是 CDN，@main 有约 12h TTL，push 后会持续
+# 吐旧版（purge 接口也是异步的），所以只作兜底
 script_sources="
-https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main
 https://gh-proxy.com/https://raw.githubusercontent.com/Oterea/sing-box-shell/main
 https://ghfast.top/https://raw.githubusercontent.com/Oterea/sing-box-shell/main
 https://raw.githubusercontent.com/Oterea/sing-box-shell/main
+https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main
 "
 
 # 下载放独占的临时目录，不碰用户当前目录（curl -o 会静默覆盖同名文件）

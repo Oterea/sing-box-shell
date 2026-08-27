@@ -1,6 +1,6 @@
 ## Install
 ```
-bash -c "$(curl -fsSL https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main/install.sh)"
+bash -c "$(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/Oterea/sing-box-shell/main/install.sh)"
 ```
 
 拉不到时可手动指定源（脚本本身与后续自更新都用它）：

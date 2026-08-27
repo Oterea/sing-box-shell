@@ -47,14 +47,15 @@ kernel_sources() {
     return 0
 }
 
-# 脚本是仓库内文件，jsDelivr 可用且最稳
+# 脚本是仓库内文件。不缓存的源排前面 —— jsDelivr 的 @main 有约 12h TTL，
+# push 之后会持续吐旧版（purge 是异步的），所以它只作兜底
 script_sources() {
     [ -n "$SBS_MIRROR" ] && printf '%s\n' "$SBS_MIRROR"
     cat <<'EOS'
-https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main
 https://gh-proxy.com/https://raw.githubusercontent.com/Oterea/sing-box-shell/main
 https://ghfast.top/https://raw.githubusercontent.com/Oterea/sing-box-shell/main
 https://raw.githubusercontent.com/Oterea/sing-box-shell/main
+https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main
 EOS
     return 0
 }
