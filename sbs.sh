@@ -12,11 +12,11 @@ CYAN="$(tput setaf 6 2>/dev/null || printf '')"
 WHITE="$(tput setaf 7 2>/dev/null || printf '')"
 RESET="$(tput sgr0 2>/dev/null || printf '')"
 
-proxy="https://github.oterea.top"
 work_dir="$HOME/sing-box"
 exec="/usr/local/bin/sbs"
 service="/etc/systemd/system/sbs.service"
 share="$work_dir/share.txt"
+last_source="$work_dir/.last_source"
 
 config_file="$work_dir/config.json" # 保存为 config.json 文件
 
@@ -34,6 +34,65 @@ error() {
 prompt() {
     printf '%s\n' "${CYAN}[prompt]:${RESET} $*"
 }
+
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<下载源<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+# 内核二进制是 GitHub release 资产，jsDelivr 不服务这类文件，只能走反代
+# 顺序即优先级；SBS_PROXY 指定的排最前；上次成功的源次之
+kernel_sources() {
+    [ -n "$SBS_PROXY" ] && printf '%s\n' "$SBS_PROXY"
+    [ -s "$last_source" ] && cat "$last_source"
+    printf '%s\n' "https://gh-proxy.com"
+    printf '%s\n' "https://ghfast.top"
+    printf '%s\n' "direct"
+    return 0
+}
+
+# 脚本是仓库内文件，jsDelivr 可用且最稳
+script_sources() {
+    [ -n "$SBS_MIRROR" ] && printf '%s\n' "$SBS_MIRROR"
+    cat <<'EOS'
+https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main
+https://gh-proxy.com/https://raw.githubusercontent.com/Oterea/sing-box-shell/main
+https://ghfast.top/https://raw.githubusercontent.com/Oterea/sing-box-shell/main
+https://raw.githubusercontent.com/Oterea/sing-box-shell/main
+EOS
+    return 0
+}
+
+remember_source() {
+    printf '%s\n' "$1" >"$last_source" 2>/dev/null
+}
+
+# 多源回落取回 release 资产。只有失败才换源，慢不换
+sb_fetch() { # $1=目标文件 $2=原始 URL
+    local dst="$1" url="$2" src full
+    for src in $(kernel_sources | awk '!seen[$0]++'); do
+        if [ "$src" = direct ]; then full="$url"; else full="$src/$url"; fi
+        info "source: $src"
+        if curl -fL --connect-timeout 5 --retry 2 --progress-bar -o "$dst" "$full"; then
+            remember_source "$src"
+            return 0
+        fi
+        warn "$src failed, trying next"
+    done
+    error "all sources failed. 可用 SBS_PROXY=<base-url> 手动指定"
+    return 1
+}
+
+# 多源回落取回仓库内脚本
+script_fetch() { # $1=文件名
+    local dst="$1" base
+    for base in $(script_sources | awk '!seen[$0]++'); do
+        info "source: $base"
+        if curl -fsSL --connect-timeout 5 --retry 2 -o "$dst" "$base/$dst"; then
+            return 0
+        fi
+        warn "$base failed, trying next"
+    done
+    error "all script sources failed. 可用 SBS_MIRROR=<base-url> 手动指定"
+    return 1
+}
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>下载源>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<检查工具<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 missing_tools=""
@@ -60,53 +119,111 @@ if [ ! -d "$work_dir" ]; then
     mkdir -p "$work_dir"
 fi
 
-get_latest_version() {
-    # ====================================获取最新版本下载链接====================================
-    latest_beta_v=""
-    latest_stable_v=""
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<资产匹配<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+# 探测本机架构与 C 库，拼出 release 资产的文件名后缀
+# 只在 -glibc / -musl 之间二选一，主动避开无后缀那个（glibc 动态 + 捆 libcronet，musl 上跑不起来）
+detect_target() {
+    local m
+    m=$(uname -m)
+    case "$m" in
+    x86_64 | amd64) arch=amd64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    armv7l | armv7) arch=armv7 ;;
+    i386 | i686) arch=386 ;;
+    riscv64) arch=riscv64 ;;
+    loongarch64) arch=loong64 ;;
+    s390x) arch=s390x ;;
+    ppc64le) arch=ppc64le ;;
+    *)
+        error "unsupported arch: $m"
+        return 1
+        ;;
+    esac
 
-    beta_url="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=15"
-    stable_url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-    # 获取最新的稳定版本和下载链接
-    stable_data=$(curl -fsSL "$stable_url")
-    latest_stable_v=$(echo "$stable_data" | jq -r '.tag_name')
-    latest_stable_linux_amd64_url=$(echo "$stable_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
-    # 获取最新的测试版本（beta）和下载链接
-    # 循环每页返回 15 个 releases
-    next_url="$beta_url"
-    while [[ -n "$next_url" ]]; do
-        # 获取当前页的 release 数据，并解析 `Link` 头部
-        beta_data_list=$(curl -fsSL -D headers.txt "$next_url")
-        if [[ $? -ne 0 ]]; then
-            echo "❌ 获取 beta 版本数据失败！"
-            exit 1
-        fi
-        # 提取 beta 版本
-        beta_data=""
-        beta_data=$(echo "$beta_data_list" | jq -c '.[] | select(.tag_name | test("-beta"))' | head -n 1)
+    if ldd --version 2>&1 | grep -qi musl; then libc=musl; else libc=glibc; fi
 
-        # 如果找到了 beta 版本，立刻退出循环
-        if [[ -n "$beta_data" ]]; then
-            # TODO===============assets修改
-            latest_beta_v=$(echo "$beta_data" | jq -r '.tag_name')
-            latest_beta_linux_amd64_url=$(echo "$beta_data" | jq -r '.assets[] | select(.browser_download_url | test("linux-amd64")) | .browser_download_url')
-            break
-        fi
-        # 解析 `Link` 头部，获取下一页的 URL
-        next_url=$(grep -i '^link:' headers.txt | sed -n 's/.*<\(.*\)>; rel="next".*/\1/p')
-        if [[ -z "$next_url" ]]; then
-            echo "❌ 没有找到下一页的链接，停止查询。"
-            break
-        fi
-        # 清理临时文件
-        rm -f headers.txt
-    done
-    # 清理临时文件
-    rm -f headers.txt
-    info "latest stable version ✅: $latest_stable_v."
-    info "latest beta version 🚀: $latest_beta_v."
-
+    asset_suffix="linux-${arch}-${libc}.tar.gz"
+    info "target: ${arch}/${libc} (asset: *-${asset_suffix})"
 }
+
+# 按命名规则拼出下载地址（规则对 stable / beta 一致，已验证）
+#   https://github.com/SagerNet/sing-box/releases/download/<tag>/sing-box-<ver>-<suffix>
+asset_url() { # $1=tag
+    printf '%s\n' "https://github.com/SagerNet/sing-box/releases/download/$1/sing-box-${1#v}-${asset_suffix}"
+}
+
+# 存在性检查：0=存在 1=确认不存在 2=判定不了（网络问题，交给 sb_fetch 兜）
+verify_asset() { # $1=url
+    local code
+    code=$(curl -sI -o /dev/null -w '%{http_code}' -L --connect-timeout 5 --max-time 20 "$1" 2>/dev/null)
+    case "$code" in
+    200) return 0 ;;
+    404) return 1 ;;
+    *) return 2 ;;
+    esac
+}
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>资产匹配>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<版本发现<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+# 不走 GitHub API：单个 release 的 JSON 就有 340KB，国内链路上 per_page=15 要拉 5MB，必超时。
+# 改用两条轻量通路，各自输出「tag 列表，最新在前」
+
+# atom：8KB，最快，但窗口只有约 10 条
+discover_tags_atom() {
+    curl -sfL --connect-timeout 5 --max-time 25 \
+        "https://github.com/SagerNet/sing-box/releases.atom" |
+        grep -o 'href="[^"]*releases/tag/[^"]*"' | sed 's|.*/tag/||; s|"$||'
+}
+
+# jsDelivr：145KB，全量 600+ 条，完全不碰 github.com
+discover_tags_jsdelivr() {
+    curl -sfL --connect-timeout 5 --max-time 25 \
+        "https://data.jsdelivr.com/v1/packages/gh/SagerNet/sing-box" |
+        jq -r '.versions[].version' | sed 's/^/v/'
+}
+
+pick_stable() { printf '%s\n' "$1" | grep -vE -- '-(alpha|beta|rc)' | head -n 1; }
+pick_beta() { printf '%s\n' "$1" | grep -- '-beta' | head -n 1; }
+
+get_latest_version() {
+    detect_target || exit 1
+
+    local tags
+    tags=$(discover_tags_atom)
+    latest_stable_v=$(pick_stable "$tags")
+    latest_beta_v=$(pick_beta "$tags")
+
+    # atom 窗口太小或拉不到时，落到全量列表
+    if [ -z "$latest_stable_v" ] || [ -z "$latest_beta_v" ]; then
+        warn "atom feed 不足，改用 jsDelivr 版本列表"
+        tags=$(discover_tags_jsdelivr)
+        [ -z "$latest_stable_v" ] && latest_stable_v=$(pick_stable "$tags")
+        [ -z "$latest_beta_v" ] && latest_beta_v=$(pick_beta "$tags")
+    fi
+
+    if [ -z "$latest_stable_v" ]; then
+        error "无法获取版本列表（github.com 与 jsDelivr 都不可达）"
+        exit 1
+    fi
+
+    latest_stable_url=$(asset_url "$latest_stable_v")
+    [ -n "$latest_beta_v" ] && latest_beta_url=$(asset_url "$latest_beta_v")
+
+    verify_asset "$latest_stable_url"
+    case $? in
+    1)
+        error "asset 不存在，上游可能改了命名: $latest_stable_url"
+        exit 1
+        ;;
+    2) warn "无法预检 asset 是否存在，继续（下载时再判）" ;;
+    esac
+
+    info "latest stable version: $latest_stable_v"
+    info "latest beta version:   ${latest_beta_v:-未找到}"
+}
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>版本发现>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
 check_installed_version() {
     if [ -e "$work_dir/sing-box" ]; then
 
@@ -162,12 +279,12 @@ install_singbox() {
     case "$is_stable" in
     [Nn])
         info "downloading beta version."
-        download_url=$latest_beta_linux_amd64_url
+        download_url=$latest_beta_url
         ;;
     # 默认稳定版
     *)
         info "downloading stable version."
-        download_url=$latest_stable_linux_amd64_url
+        download_url=$latest_stable_url
         ;;
     esac
 
@@ -176,9 +293,8 @@ install_singbox() {
     success=1
     # curl 下载
 
-    info "using curl to download sing-box."
-    curl --progress-bar -o "$work_dir/$file_name" -L "$proxy/$download_url"
-    if [ $? -eq 0 ]; then
+    info "downloading sing-box."
+    if sb_fetch "$work_dir/$file_name" "$download_url"; then
         success=0
     fi
 
@@ -368,7 +484,10 @@ update)
     sbs)
         info "updating sing-box-shell..."
         remove_sbs
-        curl -o sbs.sh -fsSL https://gitee.com/Oterea/sing-box-shell/raw/main/sbs.sh
+        if ! script_fetch sbs.sh; then
+            error "update failed."
+            exit 1
+        fi
         sudo chmod +x sbs.sh
         sudo mv -f sbs.sh /usr/local/bin/sbs
         info "sing-box-shell updated successfully."
