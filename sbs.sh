@@ -80,11 +80,11 @@ sb_fetch() { # $1=目标文件 $2=原始 URL
 }
 
 # 多源回落取回仓库内脚本
-script_fetch() { # $1=文件名
-    local dst="$1" base
+script_fetch() { # $1=本地目标路径 $2=远端文件名
+    local dst="$1" name="$2" base
     for base in $(script_sources | awk '!seen[$0]++'); do
         info "source: $base"
-        if curl -fsSL --connect-timeout 5 --retry 2 -o "$dst" "$base/$dst"; then
+        if curl -fsSL --connect-timeout 5 --retry 2 -o "$dst" "$base/$name"; then
             return 0
         fi
         warn "$base failed, trying next"
@@ -484,12 +484,23 @@ update)
     sbs)
         info "updating sing-box-shell..."
         remove_sbs
-        if ! script_fetch sbs.sh; then
+        tmpdir=$(mktemp -d) || {
+            error "无法创建临时目录"
+            exit 1
+        }
+        # 中转名字放在目标旁边，保证最后一步是同盘改名。
+        # 这一步是关键：本脚本自己就是 $exec，bash 边读边执行，
+        # 就地覆盖会让它从字节偏移处接着读到新内容，把两个版本串起来跑。
+        stage="$(dirname "$exec")/.$(basename "$exec").$$.tmp"
+        trap 'rm -rf "$tmpdir"; sudo rm -f "$stage" 2>/dev/null' EXIT
+
+        if ! script_fetch "$tmpdir/sbs.sh" sbs.sh; then
             error "update failed."
             exit 1
         fi
-        sudo chmod +x sbs.sh
-        sudo mv -f sbs.sh /usr/local/bin/sbs
+        sudo cp "$tmpdir/sbs.sh" "$stage" || exit 1
+        sudo chmod 755 "$stage" || exit 1
+        sudo mv -f "$stage" "$exec" || exit 1
         info "sing-box-shell updated successfully."
         ;;
     *)

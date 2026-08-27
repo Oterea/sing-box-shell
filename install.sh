@@ -23,10 +23,23 @@ https://ghfast.top/https://raw.githubusercontent.com/Oterea/sing-box-shell/main
 https://raw.githubusercontent.com/Oterea/sing-box-shell/main
 "
 
+# 下载放独占的临时目录，不碰用户当前目录（curl -o 会静默覆盖同名文件）
+tmpdir=$(mktemp -d) || {
+    echo -e "${RED}ERROR: 无法创建临时目录${RESET}"
+    exit 1
+}
+# 落位用的中转名字，放在目标旁边以保证同一文件系统 —— 这样最后一步一定是真改名
+stage="$(dirname "$exec")/.$(basename "$exec").$$.tmp"
+cleanup() {
+    rm -rf "$tmpdir"
+    sudo rm -f "$stage" 2>/dev/null
+}
+trap cleanup EXIT   # 正常结束、报错、Ctrl-C 都会清
+
 ok=0
 for base in ${SBS_MIRROR:-$script_sources}; do
     echo -e "${YELLOW}INFO: trying ${base}${RESET}"
-    if curl -fsSL --connect-timeout 5 --retry 2 -o sbs.sh "$base/sbs.sh"; then
+    if curl -fsSL --connect-timeout 5 --retry 2 -o "$tmpdir/sbs.sh" "$base/sbs.sh"; then
         echo -e "${GREEN}INFO: fetched from ${base}${RESET}"
         ok=1
         break
@@ -37,7 +50,10 @@ if [ "$ok" -ne 1 ]; then
     echo -e "${RED}ERROR: all sources failed. 可用 SBS_MIRROR=<base-url> 手动指定${RESET}"
     exit 1
 fi
-sudo chmod +x sbs.sh
 
-sudo mv -f sbs.sh $exec
+# 先复制到中转名字（全新名字，没有进程在用，覆盖它是安全的）
+sudo cp "$tmpdir/sbs.sh" "$stage" || exit 1
+sudo chmod 755 "$stage" || exit 1
+# 再改名顶替。同盘 rename，原子；正在运行的旧脚本仍持有旧 inode，不会被读串
+sudo mv -f "$stage" "$exec" || exit 1
 echo -e "${GREEN}INFO: sing-box-shell has been successfully installed to ${exec}.${RESET}"
