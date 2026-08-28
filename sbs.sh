@@ -23,6 +23,7 @@ readonly SBS_BIN="$SBS_WORK_DIR/sing-box"
 readonly SBS_CONFIG="$SBS_WORK_DIR/config.json"
 readonly SBS_SHARE="$SBS_WORK_DIR/share.txt"
 readonly SBS_LAST_SOURCE="$SBS_WORK_DIR/.last_source"
+readonly SBS_IPCACHE="$SBS_WORK_DIR/.exit_ip"
 readonly SBS_REPO="Oterea/sing-box-shell"
 readonly SBS_UPSTREAM="SagerNet/sing-box"
 
@@ -34,6 +35,8 @@ readonly C_RED="$(tput setaf 1 2>/dev/null || printf '')"
 readonly C_GREEN="$(tput setaf 2 2>/dev/null || printf '')"
 readonly C_YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
 readonly C_CYAN="$(tput setaf 6 2>/dev/null || printf '')"
+readonly C_DIM="$(tput dim 2>/dev/null || printf '')"
+readonly C_BOLD="$(tput bold 2>/dev/null || printf '')"
 readonly C_RESET="$(tput sgr0 2>/dev/null || printf '')"
 
 # 四个都写 stderr。这是「返回值走 stdout」那条约定必须配套的另一半 ——
@@ -291,6 +294,46 @@ kern_install() { # $1=下载地址
     core_info "sing-box installed to $SBS_BIN"
 }
 
+# ============================================================ L1 现场信息
+# tun 设备名与地址，没有则返回 1
+tun_info() {
+    local out
+    out=$(ip -br -4 addr 2>/dev/null | awk '$1 ~ /^tun/ {print $1, $3; exit}')
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+# 秒数格式化成 3d 4h / 2h 14m / 5m / 12s
+fmt_dur() {
+    local t=$1
+    if [ "$t" -ge 86400 ]; then printf '%dd %dh\n' $((t / 86400)) $((t % 86400 / 3600))
+    elif [ "$t" -ge 3600 ]; then printf '%dh %dm\n' $((t / 3600)) $((t % 3600 / 60))
+    elif [ "$t" -ge 60 ]; then printf '%dm\n' $((t / 60))
+    else printf '%ds\n' "$t"; fi
+}
+
+# 出口 IP 走缓存：菜单要瞬间打开，不能卡在网络请求上。
+# 只在状态可能变化时（启停、看详情）才刷新。
+net_exit_refresh() {
+    local j ip city country
+    j=$(curl -s --max-time 8 ipinfo.io 2>/dev/null) || return 1
+    ip=$(printf '%s' "$j" | jq -r '.ip // empty' 2>/dev/null)
+    [ -n "$ip" ] || return 1
+    city=$(printf '%s' "$j" | jq -r '.city // empty' 2>/dev/null)
+    country=$(printf '%s' "$j" | jq -r '.country // empty' 2>/dev/null)
+    printf '%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" >"$SBS_IPCACHE"
+}
+
+# 输出三段：IP、地点、年龄描述
+net_exit_cached() {
+    [ -f "$SBS_IPCACHE" ] || return 1
+    local ip loc ts age
+    IFS='|' read -r ip loc ts <"$SBS_IPCACHE" || return 1
+    [ -n "$ip" ] || return 1
+    age=$(($(date +%s) - ${ts:-0}))
+    printf '%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago"
+}
+
 # ============================================================ L2 配置
 cfg_url_get() {
     [ -f "$SBS_SHARE" ] || return 1
@@ -400,6 +443,17 @@ UNIT
 svc_start() { sudo systemctl start "$SBS_UNIT_NAME"; }
 svc_stop() { sudo systemctl stop "$SBS_UNIT_NAME"; }
 svc_status() { sudo systemctl status "$SBS_UNIT_NAME" --no-pager; }
+svc_restart() { sudo systemctl restart "$SBS_UNIT_NAME"; }
+
+# 运行时长（秒）。用 monotonic 时间戳比解析日期稳
+svc_uptime_sec() {
+    local mono now
+    mono=$(systemctl show "$SBS_UNIT_NAME" -p ActiveEnterTimestampMonotonic --value 2>/dev/null)
+    [ -n "$mono" ] && [ "$mono" != 0 ] || return 1
+    svc_is_active || return 1
+    now=$(awk '{printf "%d", $1 * 1000000}' /proc/uptime)
+    printf '%s\n' $(((now - mono) / 1000000))
+}
 svc_is_active() { systemctl is-active --quiet "$SBS_UNIT_NAME"; }
 svc_purge() {
     sudo systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
@@ -545,7 +599,7 @@ cmd_update_self() {
 # 只有 start 该关心配置是否有效 —— 配置坏了启动也是白启，不如早点说
 cmd_start() {
     cfg_check || return 1
-    svc_start && core_info "sing-box started" || {
+    svc_start && { core_info "sing-box started"; sleep 1; net_exit_refresh; } || {
         core_error "启动失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
         return 1
     }
@@ -559,11 +613,21 @@ cmd_stop() {
     }
 }
 
+cmd_restart() {
+    cfg_check || return 1
+    svc_restart && { core_info "sing-box restarted"; sleep 1; net_exit_refresh; } || {
+        core_error "重启失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
+        return 1
+    }
+}
+
 # 同样不检查配置：状态该如实显示，不该因为配置无效就拒绝回答
 cmd_status() {
     svc_status
-    core_info "出口 IP:"
-    curl -s --max-time 10 ipinfo.io || core_warn "取不到出口 IP"
+    net_exit_refresh || core_warn "取不到出口 IP"
+    local ip loc age
+    { read -r ip; read -r loc; read -r age; } < <(net_exit_cached) 2>/dev/null
+    [ -n "${ip:-}" ] && core_info "出口 IP: $ip ${loc:+($loc)}"
     return 0
 }
 
@@ -583,6 +647,138 @@ cmd_remove() {
     core_info "已全部删除"
 }
 
+# ============================================================ L4 界面原语
+#
+# 画框的两个坑，都必须靠「纯文本算宽度、带色版本打印」来绕：
+#   1. 颜色转义序列会被 ${#str} 算进长度，直接拿带色字符串算 padding 必歪
+#   2. 中文是双宽字符，${#str} 数的是字符数不是列数 —— 所以界面一律用英文
+UI_W=58
+UI_IN=$((UI_W - 2))
+
+ui_bar() {
+    local n=$1 s
+    printf -v s '%*s' "$n" ''
+    printf '%s' "${s// /─}"
+}
+ui_top() { printf '╭%s╮\n' "$(ui_bar $UI_IN)"; }
+ui_bot() { printf '╰%s╯\n' "$(ui_bar $UI_IN)"; }
+ui_sep() { printf '├%s┤\n' "$(ui_bar $UI_IN)"; }
+ui_blank() { printf '│%*s│\n' "$UI_IN" ''; }
+
+# $1 纯文本左 $2 纯文本右 $3 带色左 $4 带色右
+ui_lr() {
+    local pad=$((UI_IN - ${#1} - ${#2}))
+    [ "$pad" -lt 0 ] && pad=0
+    printf '│%s%*s%s│\n' "$3" "$pad" '' "$4"
+}
+
+# 一行两个条目。$5/$6 为 dim 时该项置灰（表示当前不可用）
+ui_item() {
+    local k1=$1 l1=$2 k2=$3 l2=$4 d1=${5:-} d2=${6:-} plain colored
+    printf -v plain '    %s   %-15s  %s   %-15s' "$k1" "$l1" "$k2" "$l2"
+    printf -v colored '    %s%s%s   %s%-15s%s  %s%s%s   %s%-15s%s' \
+        "${d1:-$C_CYAN}" "$k1" "$C_RESET" "$d1" "$l1" "${d1:+$C_RESET}" \
+        "${d2:-$C_CYAN}" "$k2" "$C_RESET" "$d2" "$l2" "${d2:+$C_RESET}"
+    ui_lr "$plain" "" "$colored" ""
+}
+
+# ============================================================ L4 菜单
+cli_menu_draw() {
+    local state scolor ver tun uptime ip loc age
+    local l2p l2c l3p l3c
+
+    if svc_is_active; then
+        state="RUNNING"
+        scolor="$C_GREEN"
+    else
+        state="STOPPED"
+        scolor="$C_DIM"
+    fi
+
+    ver=$(kern_version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1) || ver=""
+    [ -n "$ver" ] || ver="not installed"
+    tun=$(tun_info 2>/dev/null | awk '{print $1" "$2}') || tun=""
+    uptime=$(svc_uptime_sec 2>/dev/null) && uptime="up $(fmt_dur "$uptime")" || uptime=""
+
+    printf '\e[H\e[2J'
+    echo
+    ui_top
+    ui_lr "  sing-box" "$state  " "$C_BOLD  sing-box$C_RESET" "$scolor$state$C_RESET  "
+
+    printf -v l2p '  %s   %s   %s' "$ver" "${tun:-no tun}" "$uptime"
+    printf -v l2c '%s  %s   %s   %s%s' "$C_DIM" "$ver" "${tun:-no tun}" "$uptime" "$C_RESET"
+    ui_lr "$l2p" "" "$l2c" ""
+
+    if { read -r ip; read -r loc; read -r age; } < <(net_exit_cached) 2>/dev/null && [ -n "${ip:-}" ]; then
+        printf -v l3p '  exit  %s  %s' "$ip" "$loc"
+        printf -v l3c '%s  exit  %s  %s%s' "$C_DIM" "$ip" "$loc" "$C_RESET"
+        ui_lr "$l3p" "$age  " "$l3c" "$C_DIM$age$C_RESET  "
+    else
+        ui_lr "  exit  n/a" "" "$C_DIM  exit  n/a$C_RESET" ""
+    fi
+
+    ui_sep
+    ui_blank
+    if svc_is_active; then
+        ui_item s start "k" "update kernel" "$C_DIM" ""
+        ui_item x stop "c" "update config" "" ""
+        ui_item r restart "u" "update sbs" "" ""
+    else
+        ui_item s start "k" "update kernel" "" ""
+        ui_item x stop "c" "update config" "$C_DIM" ""
+        ui_item r restart "u" "update sbs" "$C_DIM" ""
+    fi
+    ui_item i status "d" remove "" ""
+    ui_blank
+    ui_sep
+    ui_lr "  q  quit" "" "  ${C_CYAN}q$C_RESET  quit" ""
+    ui_bot
+    echo
+}
+
+cli_menu_pause() {
+    echo
+    printf '%s' "${C_DIM}  按任意键返回菜单${C_RESET}"
+    read -rsn1 _ 2>/dev/null || true
+}
+
+cli_menu() {
+    # 终端太窄画框会折行，比没框还难看；直接退回帮助
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+    if [ "$cols" -lt "$UI_W" ]; then
+        core_warn "终端宽度 $cols 小于 $UI_W，改用命令行模式"
+        cli_help
+        return 0
+    fi
+
+    local key
+    while true; do
+        cli_menu_draw
+        read -rsn1 key 2>/dev/null || return 0
+        echo
+        case "$key" in
+        s) cmd_start; cli_menu_pause ;;
+        x) cmd_stop; cli_menu_pause ;;
+        r) cmd_restart; cli_menu_pause ;;
+        i) cmd_status; cli_menu_pause ;;
+        k) cmd_update_kernel; cli_menu_pause ;;
+        c) cmd_update_config; cli_menu_pause ;;
+        u)
+            cmd_update_self
+            core_info "脚本已更新，退出以加载新版本"
+            return 0
+            ;;
+        d)
+            cmd_remove && return 0
+            cli_menu_pause
+            ;;
+        q | $'\e') printf '\e[H\e[2J'; return 0 ;;
+        *) : ;;
+        esac
+    done
+}
+
 # ============================================================ L4 分发
 cli_help() {
     cat <<'USAGE'
@@ -593,6 +789,7 @@ Usage:
   sbs update sbs      更新本脚本
   sbs start           启动
   sbs stop            停止
+  sbs restart         重启
   sbs status          查看状态与出口 IP
   sbs remove          卸载全部
 
@@ -620,11 +817,13 @@ cli_dispatch() {
         ;;
     start) cmd_start ;;
     stop) cmd_stop ;;
+    restart) cmd_restart ;;
     status) cmd_status ;;
     remove) cmd_remove ;;
     help | -h | --help) cli_help ;;
     "")
-        cli_help
+        # 非 tty（管道、脚本调用）不进菜单，保持可脚本化
+        if [ -t 0 ] && [ -t 1 ]; then cli_menu; else cli_help; fi
         return 0
         ;;
     *)
