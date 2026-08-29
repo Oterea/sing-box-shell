@@ -77,7 +77,8 @@ fmt_size() {
 #   2. 中文是双宽字符，${#str} 数的是字符数不是列数 —— 所以界面一律用英文
 UI_W=58
 UI_IN=$((UI_W - 2))
-UI_BODY=8 # body 固定行数，重绘时框才不跳动
+UI_BODY=8 # 当前视图的 body 行数，由各视图在绘制前设定。
+# 固定行数是为了重绘时框不抖；不同视图行数不同，靠 ui_redraw 的 \e[J 清残留
 
 # 符号集。Unicode 一档更好看，但两种场景必须降级成纯 ASCII：
 #   TERM=linux  物理控制台没有 Unicode 字体
@@ -201,7 +202,11 @@ ui_out() {
 # 动画重绘：光标归位 + 同步输出，不清屏（清屏会闪）。
 # 走 stderr —— 这是「画屏幕」不是「输出数据」。若走 stdout，
 # key=$(ui_choose ...) 这类命令替换会把整个界面吞进变量，屏幕上什么都不显示。
-ui_redraw() { printf '%s%s%s%s' "$UI_SYNC_ON" "$UI_HOME" "${UI_BUF%$'\n'}" "$UI_SYNC_OFF" >&2; }
+ui_redraw() {
+    # \e[J 清到屏幕底：上一帧若更高（任务视图 8 行 -> 菜单 4 行），
+    # 多出来的旧行必须抹掉，否则会留在框下面
+    printf '%s%s%s\e[J%s' "$UI_SYNC_ON" "$UI_HOME" "${UI_BUF%$'\n'}" "$UI_SYNC_OFF" >&2
+}
 
 # ============================================================ L0 环境
 core_check_deps() {
@@ -876,6 +881,7 @@ cmd_status() {
         svc_status
         return 0
     fi
+    UI_BODY=0 # 命令行下的 status 就是 header，不留空 body
     ui_reset
     ui_menu_header
     ui_pad 0
@@ -990,6 +996,7 @@ task_wait() { # $1=pid
 
 task_draw() {
     local i st sym color used=0 done_all=1
+    UI_BODY=8 # 步骤最多 4 行 + 失败提示 3 行 + 空行
     ui_reset
     ui_menu_header
     ui_lr "  $TASK_TITLE" "${TASK_SUB:+$TASK_SUB  }" \
@@ -1097,6 +1104,7 @@ ui_choose() {
     local title="$1"
     shift
     local used=1 opt key
+    UI_BODY=8
     ui_reset
     ui_menu_header
     ui_lr "  $title" "" "$C_BOLD  $title$C_RESET" ""
@@ -1147,6 +1155,7 @@ menu_resolve_sub() {
         esac
     fi
     # 需要打字：框正常画完，输入行紧贴框底（框内做 readline 要自己管光标，不值得）
+    UI_BODY=8
     ui_reset
     ui_menu_header
     ui_lr "  subscription" "" "$C_BOLD  subscription$C_RESET" ""
@@ -1475,50 +1484,44 @@ ui_menu_header() {
 }
 
 UI_REFRESHING=0 # f 键刷新出口 IP 期间置 1，让 header 显示 refreshing
-MENU_REFRESH_N=0 # 本次会话按了几次 f
 
 cli_menu_draw() {
+    UI_BODY=4 # 8 个动作正好 2 列 4 行填满，不留空行
     ui_reset
     ui_menu_header
-    ui_blank
     # k 一个键两种含义：没装内核时是 install（内核+unit+订阅一条龙），
     # 装了之后才是 update kernel。全新机器上敲 sbs 必须有路可走。
     local klabel
     if [ -x "$SBS_BIN" ]; then klabel="update kernel"; else klabel="install"; fi
 
     if [ ! -x "$SBS_BIN" ]; then
-        # 内核都没有，启动 / 停止 / 重启 / 状态全都没意义，一律置灰
+        # 内核都没有，除了装什么都做不了
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "$C_DIM" "$C_DIM"
         ui_item r restart "u" "update sbs" "$C_DIM" ""
-        ui_item d remove "" "" "$C_DIM" "$C_DIM"
+        ui_item f refresh "d" remove "" "$C_DIM"
     elif svc_is_active; then
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "" ""
         ui_item r restart "u" "update sbs" "" ""
-        ui_item d remove "" "" "" ""
+        ui_item f refresh "d" remove "" ""
     else
         ui_item s start "k" "$klabel" "" ""
         ui_item x stop "c" "update config" "$C_DIM" ""
         ui_item r restart "u" "update sbs" "$C_DIM" ""
-        ui_item d remove "" "" "" ""
+        ui_item f refresh "d" remove "" ""
     fi
-    ui_pad 5
+    ui_pad 4
     cli_menu_footer
 }
 
 # 底部提示行。details 模式下多一个「切回动作列表」的提示
 cli_menu_footer() {
     ui_sep
-    local rp rc
-    if [ -n "${TASK_RESULT:-}" ]; then
-        rp="$TASK_RESULT  f  refresh  "
-        rc="$C_GREEN$TASK_RESULT$C_RESET  ${C_CYAN}f$C_RESET  refresh  "
-    else
-        rp="f  refresh  "
-        rc="${C_CYAN}f$C_RESET  refresh  "
-    fi
-    ui_lr "  q  quit" "$rp" "  ${C_CYAN}q$C_RESET  quit" "$rc"
+    # 左边是上一个动作的瞬时结果，右边是退出键。两种性质不同的东西分居两侧，
+    # 不再和 f refresh 挤成一行
+    local msg="${TASK_RESULT:-}"
+    ui_lr "  $msg" "q  quit  " "$C_GREEN  $msg$C_RESET" "${C_CYAN}q$C_RESET  quit  "
     ui_bot
     ui_redraw
 }
@@ -1592,8 +1595,8 @@ cli_menu() {
             UI_REFRESHING=1
             cli_menu_draw # 先把 refreshing 画出来，那一秒不至于像卡死
             if net_exit_refresh; then
-                MENU_REFRESH_N=$((MENU_REFRESH_N + 1))
-                TASK_RESULT="refreshed x$MENU_REFRESH_N"
+                # 不计数 —— 年龄归零成 0s ago 本身就是最好的确认
+                TASK_RESULT="refreshed"
             else
                 TASK_RESULT="exit ip unavailable"
             fi
