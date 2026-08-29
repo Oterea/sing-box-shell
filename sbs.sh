@@ -51,6 +51,92 @@ die() {
     exit 1
 }
 
+# ============================================================ L0 格式化
+# 秒数格式化成 3d 4h / 2h 14m / 5m / 12s
+fmt_dur() {
+    local t=$1
+    if [ "$t" -ge 86400 ]; then printf '%dd %dh\n' $((t / 86400)) $((t % 86400 / 3600))
+    elif [ "$t" -ge 3600 ]; then printf '%dh %dm\n' $((t / 3600)) $((t % 3600 / 60))
+    elif [ "$t" -ge 60 ]; then printf '%dm\n' $((t / 60))
+    else printf '%ds\n' "$t"; fi
+}
+
+# 字节数转人类可读
+fmt_size() {
+    local b=$1
+    if [ "$b" -ge 1073741824 ]; then awk -v b="$b" 'BEGIN{printf "%.1fG", b/1073741824}'
+    elif [ "$b" -ge 1048576 ]; then awk -v b="$b" 'BEGIN{printf "%.1fM", b/1048576}'
+    elif [ "$b" -ge 1024 ]; then awk -v b="$b" 'BEGIN{printf "%.1fK", b/1024}'
+    else printf '%dB' "$b"; fi
+}
+
+# ============================================================ L0 界面原语
+#
+# 画框的两个坑，都必须靠「纯文本算宽度、带色版本打印」来绕：
+#   1. 颜色转义序列会被 ${#str} 算进长度，直接拿带色字符串算 padding 必歪
+#   2. 中文是双宽字符，${#str} 数的是字符数不是列数 —— 所以界面一律用英文
+UI_W=58
+UI_IN=$((UI_W - 2))
+
+ui_bar() {
+    local n=$1 s
+    printf -v s '%*s' "$n" ''
+    printf '%s' "${s// /─}"
+}
+ui_top() { printf '╭%s╮\n' "$(ui_bar $UI_IN)"; }
+ui_bot() { printf '╰%s╯\n' "$(ui_bar $UI_IN)"; }
+ui_sep() { printf '├%s┤\n' "$(ui_bar $UI_IN)"; }
+ui_blank() { printf '│%*s│\n' "$UI_IN" ''; }
+
+# $1 纯文本左 $2 纯文本右 $3 带色左 $4 带色右
+ui_lr() {
+    local pad=$((UI_IN - ${#1} - ${#2}))
+    [ "$pad" -lt 0 ] && pad=0
+    printf '│%s%*s%s│\n' "$3" "$pad" '' "$4"
+}
+
+# 分区标题嵌在边线上：├─ service ────────┤
+ui_sec() { # $1=标题 $2=左角(默认├) $3=右角(默认┤)
+    local t="$1"
+    local lc="${2:-├}"
+    local rc="${3:-┤}"
+    local n=$((UI_IN - ${#t} - 3))
+    [ "$n" -lt 0 ] && n=0
+    printf '%s─ %s%s%s %s%s\n' "$lc" "$C_DIM" "$t" "$C_RESET" "$(ui_bar $n)" "$rc"
+}
+
+# 键值行。键固定 10 列并置灰，值正常色，$3 为右对齐的附加信息
+ui_kv() { # $1=键 $2=值(纯) $3=右(纯) $4=值(带色,省略则同纯) $5=右(带色,省略则同纯)
+    local plain colored
+    printf -v plain '  %-10s%s' "$1" "$2"
+    printf -v colored '  %s%-10s%s%s' "$C_DIM" "$1" "$C_RESET" "${4:-$2}"
+    ui_lr "$plain" "$3" "$colored" "${5:-$3}"
+}
+
+# 值太长时截断，保证不撑破框
+ui_fit() { # $1=文本 $2=可用列数
+    local t="$1"
+    local n="$2"
+    if [ "${#t}" -le "$n" ]; then printf '%s' "$t"; else printf '%s...' "${t:0:$((n - 3))}"; fi
+}
+
+# 一行两个条目。$5/$6 为 dim 时该项置灰（表示当前不可用）
+# 一个「键 + 标签」单元格。$3 非空时整体置灰，表示该动作当前不可用
+_ui_cell() { # $1=键 $2=标签 $3=置灰色(可空)
+    if [ -n "$3" ]; then
+        printf '%s%s   %-15s%s' "$3" "$1" "$2" "$C_RESET"
+    else
+        printf '%s%s%s   %-15s' "$C_CYAN" "$1" "$C_RESET" "$2"
+    fi
+}
+
+ui_item() { # $1..$4=两组键与标签  $5/$6=各自的置灰色(可空)
+    local plain colored
+    printf -v plain '    %s   %-15s  %s   %-15s' "$1" "$2" "$3" "$4"
+    printf -v colored '    %s  %s' "$(_ui_cell "$1" "$2" "${5:-}")" "$(_ui_cell "$3" "$4" "${6:-}")"
+    ui_lr "$plain" "" "$colored" ""
+}
+
 # ============================================================ L0 环境
 core_check_deps() {
     local missing="" t
@@ -229,6 +315,50 @@ gh_resolve_tags() {
     printf '%s\n%s\n' "$stable" "$beta"
 }
 
+# ============================================================ L1 现场信息
+# tun 设备名与地址，没有则返回 1
+tun_info() {
+    local out
+    out=$(ip -br -4 addr 2>/dev/null | awk '$1 ~ /^tun/ {print $1, $3; exit}')
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+
+# 出口 IP 走缓存：菜单要瞬间打开，不能卡在网络请求上。
+# 只在状态可能变化时（启停、看详情）才刷新。
+net_exit_refresh() {
+    local j ip city country
+    j=$(curl -s --max-time 8 ipinfo.io 2>/dev/null) || return 1
+    ip=$(printf '%s' "$j" | jq -r '.ip // empty' 2>/dev/null)
+    [ -n "$ip" ] || return 1
+    city=$(printf '%s' "$j" | jq -r '.city // empty' 2>/dev/null)
+    country=$(printf '%s' "$j" | jq -r '.country // empty' 2>/dev/null)
+    local org
+    org=$(printf '%s' "$j" | jq -r '.org // empty' 2>/dev/null)
+    local state
+    svc_is_active && state=active || state=inactive
+    # org 追加在末尾，这样旧的四字段缓存仍能正确解析（org 为空）
+    printf '%s|%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" "$org" >"$SBS_IPCACHE"
+}
+
+# 输出三段：IP、地点、年龄描述
+net_exit_cached() {
+    [ -f "$SBS_IPCACHE" ] || return 1
+    local ip loc ts st org cur age
+    IFS='|' read -r ip loc ts st org <"$SBS_IPCACHE" || return 1
+    [ -n "$ip" ] || return 1
+    svc_is_active && cur=active || cur=inactive
+    # 缓存记录的服务状态与当前不符 -> 这条出口信息已经不作数，标成 stale。
+    # 这是比「停止时刷新」更硬的一道保险：刷新可能因为断网失败，而状态比对不会。
+    if [ -n "${st:-}" ] && [ "$st" != "$cur" ]; then
+        printf '%s\n%s\nstale\n%s\n' "$ip" "$loc" "${org:-}"
+        return 0
+    fi
+    age=$(($(date +%s) - ${ts:-0}))
+    printf '%s\n%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago" "${org:-}"
+}
+
 # ============================================================ L2 内核
 # 不用 `... | head -1`：开了 pipefail 时，head 提前关闭管道会给前面的进程
 # 送 SIGPIPE，整条管道的状态变成 141，调用方会误判成「二进制跑不起来」。
@@ -238,6 +368,14 @@ kern_version() {
     local out
     out=$("$SBS_BIN" version 2>/dev/null) || return 1
     printf '%s\n' "${out%%$'\n'*}"
+}
+
+# 只取版本号，去掉 "sing-box version " 前缀。菜单与 status 面板共用
+kern_version_short() {
+    local v
+    v=$(kern_version) || return 1
+    v=$(printf '%s' "$v" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*') || return 1
+    printf '%s\n' "${v%%$'\n'*}"
 }
 
 # 下载、解压、自检、顶替。全程在 $SBS_WORK_DIR 下的临时目录里进行。
@@ -300,74 +438,7 @@ kern_install() { # $1=下载地址
     core_info "sing-box installed to $SBS_BIN"
 }
 
-# 只取版本号，去掉 "sing-box version " 前缀。菜单与 status 面板共用
-kern_version_short() {
-    local v
-    v=$(kern_version) || return 1
-    v=$(printf '%s' "$v" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*') || return 1
-    printf '%s\n' "${v%%$'\n'*}"
-}
 
-# ============================================================ L1 现场信息
-# tun 设备名与地址，没有则返回 1
-tun_info() {
-    local out
-    out=$(ip -br -4 addr 2>/dev/null | awk '$1 ~ /^tun/ {print $1, $3; exit}')
-    [ -n "$out" ] || return 1
-    printf '%s\n' "$out"
-}
-
-# 秒数格式化成 3d 4h / 2h 14m / 5m / 12s
-fmt_dur() {
-    local t=$1
-    if [ "$t" -ge 86400 ]; then printf '%dd %dh\n' $((t / 86400)) $((t % 86400 / 3600))
-    elif [ "$t" -ge 3600 ]; then printf '%dh %dm\n' $((t / 3600)) $((t % 3600 / 60))
-    elif [ "$t" -ge 60 ]; then printf '%dm\n' $((t / 60))
-    else printf '%ds\n' "$t"; fi
-}
-
-# 出口 IP 走缓存：菜单要瞬间打开，不能卡在网络请求上。
-# 只在状态可能变化时（启停、看详情）才刷新。
-net_exit_refresh() {
-    local j ip city country
-    j=$(curl -s --max-time 8 ipinfo.io 2>/dev/null) || return 1
-    ip=$(printf '%s' "$j" | jq -r '.ip // empty' 2>/dev/null)
-    [ -n "$ip" ] || return 1
-    city=$(printf '%s' "$j" | jq -r '.city // empty' 2>/dev/null)
-    country=$(printf '%s' "$j" | jq -r '.country // empty' 2>/dev/null)
-    local org
-    org=$(printf '%s' "$j" | jq -r '.org // empty' 2>/dev/null)
-    local state
-    svc_is_active && state=active || state=inactive
-    # org 追加在末尾，这样旧的四字段缓存仍能正确解析（org 为空）
-    printf '%s|%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" "$org" >"$SBS_IPCACHE"
-}
-
-# 输出三段：IP、地点、年龄描述
-net_exit_cached() {
-    [ -f "$SBS_IPCACHE" ] || return 1
-    local ip loc ts st org cur age
-    IFS='|' read -r ip loc ts st org <"$SBS_IPCACHE" || return 1
-    [ -n "$ip" ] || return 1
-    svc_is_active && cur=active || cur=inactive
-    # 缓存记录的服务状态与当前不符 -> 这条出口信息已经不作数，标成 stale。
-    # 这是比「停止时刷新」更硬的一道保险：刷新可能因为断网失败，而状态比对不会。
-    if [ -n "${st:-}" ] && [ "$st" != "$cur" ]; then
-        printf '%s\n%s\nstale\n%s\n' "$ip" "$loc" "${org:-}"
-        return 0
-    fi
-    age=$(($(date +%s) - ${ts:-0}))
-    printf '%s\n%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago" "${org:-}"
-}
-
-# 字节数转人类可读
-fmt_size() {
-    local b=$1
-    if [ "$b" -ge 1073741824 ]; then awk -v b="$b" 'BEGIN{printf "%.1fG", b/1073741824}'
-    elif [ "$b" -ge 1048576 ]; then awk -v b="$b" 'BEGIN{printf "%.1fM", b/1048576}'
-    elif [ "$b" -ge 1024 ]; then awk -v b="$b" 'BEGIN{printf "%.1fK", b/1024}'
-    else printf '%dB' "$b"; fi
-}
 
 # ============================================================ L2 配置
 cfg_url_get() {
@@ -379,6 +450,13 @@ cfg_url_get() {
 }
 
 cfg_url_set() { printf 'config_url="%s"\n' "$1" >"$SBS_SHARE"; }
+
+# 配置里有几个真正的出站节点（排除 direct/block 与分组类）
+cfg_node_count() {
+    [ -f "$SBS_CONFIG" ] || return 1
+    jq '[.outbounds[]? | select(.type != "direct" and .type != "block" and .type != "selector" and .type != "urltest")] | length' \
+        "$SBS_CONFIG" 2>/dev/null
+}
 
 cfg_url_valid() { case "$1" in http://* | https://*) return 0 ;; *) return 1 ;; esac; }
 
@@ -483,13 +561,23 @@ svc_restart() { sudo systemctl restart "$SBS_UNIT_NAME"; }
 # 运行时长（秒）。用 monotonic 时间戳比解析日期稳
 svc_uptime_sec() {
     local mono now
-    mono=$(systemctl show "$SBS_UNIT_NAME" -p ActiveEnterTimestampMonotonic --value 2>/dev/null)
+    mono=$(svc_prop ActiveEnterTimestampMonotonic)
     [ -n "$mono" ] && [ "$mono" != 0 ] || return 1
     svc_is_active || return 1
     now=$(awk '{printf "%d", $1 * 1000000}' /proc/uptime)
     printf '%s\n' $(((now - mono) / 1000000))
 }
 svc_is_active() { systemctl is-active --quiet "$SBS_UNIT_NAME"; }
+
+# 读一个 systemd 属性
+svc_prop() { systemctl show "$SBS_UNIT_NAME" -p "$1" --value 2>/dev/null; }
+
+# 运行时长的可读形式，没在跑就返回空
+svc_uptime_str() {
+    local t
+    t=$(svc_uptime_sec 2>/dev/null) || return 0
+    printf 'up %s\n' "$(fmt_dur "$t")"
+}
 svc_purge() {
     sudo systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
     sudo systemctl stop "$SBS_UNIT_NAME" >/dev/null 2>&1
@@ -636,9 +724,6 @@ cmd_start() {
     cfg_check || return 1
     if svc_start; then
         core_info "sing-box started"
-        sleep 1
-        # 刷新失败不能影响 start 的成败判定 —— 取不到出口 IP 是小事
-        net_exit_refresh || core_warn "出口 IP 暂时取不到"
     else
         core_error "启动失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
         return 1
@@ -649,8 +734,6 @@ cmd_start() {
 cmd_stop() {
     if svc_stop; then
         core_info "sing-box stopped"
-        sleep 1
-        net_exit_refresh || core_warn "出口 IP 暂时取不到"
     else
         core_error "停止失败"
         return 1
@@ -661,8 +744,6 @@ cmd_restart() {
     cfg_check || return 1
     if svc_restart; then
         core_info "sing-box restarted"
-        sleep 1
-        net_exit_refresh || core_warn "出口 IP 暂时取不到"
     else
         core_error "重启失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
         return 1
@@ -693,14 +774,14 @@ cmd_status() {
         state=stopped
         scolor="$C_DIM"
     fi
-    up=$(svc_uptime_sec 2>/dev/null) && up="up $(fmt_dur "$up")" || up=""
-    pid=$(systemctl show "$SBS_UNIT_NAME" -p MainPID --value 2>/dev/null)
+    up=$(svc_uptime_str)
+    pid=$(svc_prop MainPID)
     [ "${pid:-0}" = 0 ] && pid="-"
-    mem=$(systemctl show "$SBS_UNIT_NAME" -p MemoryCurrent --value 2>/dev/null)
+    mem=$(svc_prop MemoryCurrent)
     case "$mem" in '' | '[not set]' | 18446744073709551615) mem="-" ;; *) mem=$(fmt_size "$mem") ;; esac
-    cpu=$(systemctl show "$SBS_UNIT_NAME" -p CPUUsageNSec --value 2>/dev/null)
+    cpu=$(svc_prop CPUUsageNSec)
     case "$cpu" in '' | '[not set]') cpu="-" ;; *) cpu=$(awk -v n="$cpu" 'BEGIN{printf "%.1fs", n/1e9}') ;; esac
-    nrs=$(systemctl show "$SBS_UNIT_NAME" -p NRestarts --value 2>/dev/null)
+    nrs=$(svc_prop NRestarts)
     [ -n "${nrs:-}" ] || nrs=0
 
     # ---- kernel ----
@@ -723,7 +804,7 @@ cmd_status() {
     local src nodes mtime valid vcolor
     src=$(cfg_url_get 2>/dev/null) || src="-"
     if [ -f "$SBS_CONFIG" ]; then
-        nodes=$(jq '[.outbounds[]? | select(.type != "direct" and .type != "block" and .type != "selector" and .type != "urltest")] | length' "$SBS_CONFIG" 2>/dev/null) || nodes="?"
+        nodes=$(cfg_node_count) || nodes="?"
         mtime=$(stat -c %Y "$SBS_CONFIG" 2>/dev/null) && mtime="$(fmt_dur $(($(date +%s) - mtime))) ago" || mtime="-"
         if [ -x "$SBS_BIN" ] && [ -z "$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)" ]; then
             valid=valid
@@ -758,7 +839,7 @@ cmd_status() {
     ui_sec config
     ui_kv source "$(ui_fit "$src" 42)" ""
     ui_kv nodes "$(printf '%-10s updated %s' "$nodes" "$mtime")" "$valid " "" "$vcolor$valid$C_RESET "
-    printf '╰%s╯\n' "$(ui_bar $UI_IN)"
+    ui_bot
     return 0
 }
 
@@ -780,66 +861,6 @@ cmd_remove() {
     core_info "已全部删除"
 }
 
-# ============================================================ L4 界面原语
-#
-# 画框的两个坑，都必须靠「纯文本算宽度、带色版本打印」来绕：
-#   1. 颜色转义序列会被 ${#str} 算进长度，直接拿带色字符串算 padding 必歪
-#   2. 中文是双宽字符，${#str} 数的是字符数不是列数 —— 所以界面一律用英文
-UI_W=58
-UI_IN=$((UI_W - 2))
-
-ui_bar() {
-    local n=$1 s
-    printf -v s '%*s' "$n" ''
-    printf '%s' "${s// /─}"
-}
-ui_top() { printf '╭%s╮\n' "$(ui_bar $UI_IN)"; }
-ui_bot() { printf '╰%s╯\n' "$(ui_bar $UI_IN)"; }
-ui_sep() { printf '├%s┤\n' "$(ui_bar $UI_IN)"; }
-ui_blank() { printf '│%*s│\n' "$UI_IN" ''; }
-
-# $1 纯文本左 $2 纯文本右 $3 带色左 $4 带色右
-ui_lr() {
-    local pad=$((UI_IN - ${#1} - ${#2}))
-    [ "$pad" -lt 0 ] && pad=0
-    printf '│%s%*s%s│\n' "$3" "$pad" '' "$4"
-}
-
-# 分区标题嵌在边线上：├─ service ────────┤
-ui_sec() { # $1=标题 $2=左角(默认├) $3=右角(默认┤)
-    local t="$1"
-    local lc="${2:-├}"
-    local rc="${3:-┤}"
-    local n=$((UI_IN - ${#t} - 3))
-    [ "$n" -lt 0 ] && n=0
-    printf '%s─ %s%s%s %s%s\n' "$lc" "$C_DIM" "$t" "$C_RESET" "$(ui_bar $n)" "$rc"
-}
-
-# 键值行。键固定 10 列并置灰，值正常色，$3 为右对齐的附加信息
-ui_kv() { # $1=键 $2=值(纯) $3=右(纯) $4=值(带色,省略则同纯) $5=右(带色,省略则同纯)
-    local plain colored
-    printf -v plain '  %-10s%s' "$1" "$2"
-    printf -v colored '  %s%-10s%s%s' "$C_DIM" "$1" "$C_RESET" "${4:-$2}"
-    ui_lr "$plain" "$3" "$colored" "${5:-$3}"
-}
-
-# 值太长时截断，保证不撑破框
-ui_fit() { # $1=文本 $2=可用列数
-    local t="$1"
-    local n="$2"
-    if [ "${#t}" -le "$n" ]; then printf '%s' "$t"; else printf '%s...' "${t:0:$((n - 3))}"; fi
-}
-
-# 一行两个条目。$5/$6 为 dim 时该项置灰（表示当前不可用）
-ui_item() {
-    local k1=$1 l1=$2 k2=$3 l2=$4 d1=${5:-} d2=${6:-} plain colored
-    printf -v plain '    %s   %-15s  %s   %-15s' "$k1" "$l1" "$k2" "$l2"
-    printf -v colored '    %s%s%s   %s%-15s%s  %s%s%s   %s%-15s%s' \
-        "${d1:-$C_CYAN}" "$k1" "$C_RESET" "$d1" "$l1" "${d1:+$C_RESET}" \
-        "${d2:-$C_CYAN}" "$k2" "$C_RESET" "$d2" "$l2" "${d2:+$C_RESET}"
-    ui_lr "$plain" "" "$colored" ""
-}
-
 # ============================================================ L4 菜单
 cli_menu_draw() {
     local state scolor ver tun uptime ip loc age
@@ -856,7 +877,7 @@ cli_menu_draw() {
     ver=$(kern_version_short 2>/dev/null) || ver=""
     [ -n "$ver" ] || ver="not installed"
     tun=$(tun_info 2>/dev/null | awk '{print $1" "$2}') || tun=""
-    uptime=$(svc_uptime_sec 2>/dev/null) && uptime="up $(fmt_dur "$uptime")" || uptime=""
+    uptime=$(svc_uptime_str)
 
     printf '\e[H\e[2J'
     echo
@@ -903,7 +924,8 @@ cli_menu_draw() {
     fi
     ui_blank
     ui_sep
-    ui_lr "  q  quit" "" "  ${C_CYAN}q$C_RESET  quit" ""
+    ui_lr "  q  quit" "f  refresh  " \
+        "  ${C_CYAN}q$C_RESET  quit" "${C_CYAN}f$C_RESET  refresh  "
     ui_bot
     echo
 }
@@ -951,6 +973,10 @@ cli_menu() {
             # cmd_remove 取消或失败都返回 1，此时留在菜单
             if cmd_remove; then return 0; fi
             cli_menu_pause
+            ;;
+        f)
+            # 唯一显式发网络请求的键。启停不再自动刷新，想要准确值就按它
+            net_exit_refresh || core_warn "取不到出口 IP"
             ;;
         q | $'\e') printf '\e[H\e[2J'; return 0 ;;
         *) : ;;
