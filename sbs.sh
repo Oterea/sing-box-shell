@@ -868,57 +868,7 @@ cmd_restart() {
 
 # 同样不检查配置：状态该如实显示，不该因为配置无效就拒绝回答。
 # 面板宽度不够时退回 systemctl 原始输出。
-# 详情 body，固定 5 行。只放 header 没有的东西 ——
-# 状态 / 版本 / tun / 出口 / 运行时长都在 header 里，不再重复一遍。
-# valid 那项要跑一次 sing-box check（几十毫秒），所以只在详情模式下算。
-ui_details_body() {
-    local pid mem cpu nrs bin bsize nodes mtime valid vcolor src
-
-    pid=$(svc_prop MainPID)
-    [ "${pid:-0}" = 0 ] && pid="-"
-    mem=$(svc_prop MemoryCurrent)
-    case "$mem" in '' | '[not set]' | 18446744073709551615) mem="-" ;; *) mem=$(fmt_size "$mem") ;; esac
-    cpu=$(svc_prop CPUUsageNSec)
-    case "$cpu" in '' | '[not set]') cpu="-" ;; *) cpu=$(awk -v n="$cpu" 'BEGIN{printf "%.1fs", n/1e9}') ;; esac
-    nrs=$(svc_prop NRestarts)
-    [ -n "${nrs:-}" ] || nrs=0
-
-    if [ -f "$SBS_BIN" ]; then
-        bsize=$(fmt_size "$(stat -c %s "$SBS_BIN" 2>/dev/null || echo 0)")
-        bin="${SBS_BIN/#$HOME/\~}"
-    else
-        bsize=""
-        bin="-"
-    fi
-
-    if [ -f "$SBS_CONFIG" ]; then
-        nodes=$(cfg_node_count) || nodes="?"
-        mtime=$(stat -c %Y "$SBS_CONFIG" 2>/dev/null) &&
-            mtime="updated $(fmt_dur $(($(date +%s) - mtime))) ago" || mtime=""
-        if [ -x "$SBS_BIN" ] && [ -z "$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)" ]; then
-            valid=valid
-            vcolor="$C_GREEN"
-        else
-            valid=invalid
-            vcolor="$C_RED"
-        fi
-    else
-        nodes="-"
-        mtime=""
-        valid="missing"
-        vcolor="$C_YELLOW"
-    fi
-    src=$(cfg_url_get 2>/dev/null) || src="-"
-
-    ui_kv pid "$(printf '%-12s mem %-10s cpu %s' "$pid" "$mem" "$cpu")" ""
-    ui_kv restarts "$nrs" ""
-    ui_kv binary "$(ui_fit "$bin" 32)" "${bsize:+$bsize }" "" "$C_DIM${bsize:+$bsize }$C_RESET"
-    ui_kv config "$(printf '%-12s %s' "$nodes nodes" "$mtime")" "$valid " "" "$vcolor$valid$C_RESET "
-    ui_kv source "$(ui_fit "$src" 42)" ""
-}
-readonly UI_DETAILS_ROWS=5
-
-# 命令行下的 sbs status：header + 详情 body。与菜单里按 i 是同一套渲染
+# 命令行下的 sbs status：就是菜单那个框，body 空着
 cmd_status() {
     local cols
     cols=$(tput cols 2>/dev/null || echo 80)
@@ -928,9 +878,7 @@ cmd_status() {
     fi
     ui_reset
     ui_menu_header
-    ui_blank
-    ui_details_body
-    ui_pad $((UI_DETAILS_ROWS + 1))
+    ui_pad 0
     ui_bot
     ui_out
     return 0
@@ -1474,37 +1422,62 @@ ui_menu_header() {
     uptime=$(svc_uptime_str)
 
     ui_top
-    ui_lr "  sing-box" "$state  " "$C_BOLD  sing-box$C_RESET" "$scolor$state$C_RESET  "
+    local title
+    if [ -f "$SBS_BIN" ]; then title="${SBS_BIN/#$HOME/\~}"; else title="sing-box"; fi
+    ui_lr "  $title" "$state  " "$C_BOLD  $title$C_RESET" "$scolor$state$C_RESET  "
 
+    # 配置是否合法挂在第 2 行右角常驻。这是 header 里唯一需要跑一次
+    # sing-box check 的字段（306 节点约几十毫秒），值得 —— 光看 RUNNING
+    # 看不出配置已经坏了。
+    local valid vcolor
+    if [ ! -f "$SBS_CONFIG" ]; then
+        valid=missing
+        vcolor="$C_YELLOW"
+    elif [ -x "$SBS_BIN" ] && [ -z "$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)" ]; then
+        valid=valid
+        vcolor="$C_GREEN"
+    else
+        valid=invalid
+        vcolor="$C_RED"
+    fi
     printf -v l2p '  %s   %s   %s' "$ver" "${tun:-no tun}" "$uptime"
-    printf -v l2c '%s  %s   %s   %s%s' "$C_DIM" "$ver" "${tun:-no tun}" "$uptime" "$C_RESET"
-    ui_lr "$l2p" "" "$l2c" ""
+    # 右角要放 valid，左半边超长时先截断，否则挤成 "up 2h 24mvalid"
+    l2p=$(ui_fit "$l2p" $((UI_IN - ${#valid} - 3)))
+    l2c="$C_DIM$l2p$C_RESET"
+    ui_lr "$l2p" "$valid  " "$l2c" "$vcolor$valid$C_RESET  "
 
     if { read -r ip; read -r loc; read -r age; } < <(net_exit_cached) 2>/dev/null && [ -n "${ip:-}" ]; then
         printf -v l3p '  exit  %s  %s' "$ip" "$loc"
         printf -v l3c '%s  exit  %s  %s%s' "$C_DIM" "$ip" "$loc" "$C_RESET"
         local agec="$C_DIM$age$C_RESET"
         [ "$age" = stale ] && agec="$C_YELLOW$age$C_RESET"
+        if [ "$UI_REFRESHING" -eq 1 ]; then
+            age="refreshing"
+            agec="$C_CYAN$age$C_RESET"
+        fi
         ui_lr "$l3p" "$age  " "$l3c" "$agec  "
     else
         ui_lr "  exit  n/a" "" "$C_DIM  exit  n/a$C_RESET" ""
     fi
 
+    # 第 4 行只在出问题时出现。restarts 常态为 0，常驻显示纯粹是噪音
+    local nrs
+    nrs=$(svc_prop NRestarts)
+    if [ -n "${nrs:-}" ] && [ "$nrs" -gt 0 ] 2>/dev/null; then
+        ui_lr "  restarted $nrs times - check the logs" "" \
+            "$C_YELLOW  restarted $nrs times - check the logs$C_RESET" ""
+    fi
+
     ui_sep
 }
 
-MENU_VIEW=actions # actions | details
+UI_REFRESHING=0 # f 键刷新出口 IP 期间置 1，让 header 显示 refreshing
+MENU_REFRESH_N=0 # 本次会话按了几次 f
 
 cli_menu_draw() {
     ui_reset
     ui_menu_header
     ui_blank
-    if [ "$MENU_VIEW" = details ]; then
-        ui_details_body
-        ui_pad $((UI_DETAILS_ROWS + 1))
-        cli_menu_footer
-        return 0
-    fi
     # k 一个键两种含义：没装内核时是 install（内核+unit+订阅一条龙），
     # 装了之后才是 update kernel。全新机器上敲 sbs 必须有路可走。
     local klabel
@@ -1515,17 +1488,17 @@ cli_menu_draw() {
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "$C_DIM" "$C_DIM"
         ui_item r restart "u" "update sbs" "$C_DIM" ""
-        ui_item i details "d" remove "$C_DIM" "$C_DIM"
+        ui_item d remove "" "" "$C_DIM" "$C_DIM"
     elif svc_is_active; then
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "" ""
         ui_item r restart "u" "update sbs" "" ""
-        ui_item i details "d" remove "" ""
+        ui_item d remove "" "" "" ""
     else
         ui_item s start "k" "$klabel" "" ""
         ui_item x stop "c" "update config" "$C_DIM" ""
         ui_item r restart "u" "update sbs" "$C_DIM" ""
-        ui_item i details "d" remove "" ""
+        ui_item d remove "" "" "" ""
     fi
     ui_pad 5
     cli_menu_footer
@@ -1534,14 +1507,13 @@ cli_menu_draw() {
 # 底部提示行。details 模式下多一个「切回动作列表」的提示
 cli_menu_footer() {
     ui_sep
-    local rp rc back=""
-    [ "$MENU_VIEW" = details ] && back="i  actions   "
+    local rp rc
     if [ -n "${TASK_RESULT:-}" ]; then
-        rp="$TASK_RESULT  ${back}f  refresh  "
-        rc="$C_GREEN$TASK_RESULT$C_RESET  ${back:+${C_CYAN}i$C_RESET  actions   }${C_CYAN}f$C_RESET  refresh  "
+        rp="$TASK_RESULT  f  refresh  "
+        rc="$C_GREEN$TASK_RESULT$C_RESET  ${C_CYAN}f$C_RESET  refresh  "
     else
-        rp="${back}f  refresh  "
-        rc="${back:+${C_CYAN}i$C_RESET  actions   }${C_CYAN}f$C_RESET  refresh  "
+        rp="f  refresh  "
+        rc="${C_CYAN}f$C_RESET  refresh  "
     fi
     ui_lr "  q  quit" "$rp" "  ${C_CYAN}q$C_RESET  quit" "$rc"
     ui_bot
@@ -1574,10 +1546,7 @@ cli_menu() {
         s) TASK_RESULT=""; menu_quick cmd_start "started" "start" ;;
         x) TASK_RESULT=""; menu_quick cmd_stop "stopped" "stop" ;;
         r) TASK_RESULT=""; menu_quick cmd_restart "restarted" "restart" ;;
-        i)
-            # 不是进入另一个视图，只是把 body 换掉 —— 动作键照常可用
-            if [ "$MENU_VIEW" = details ]; then MENU_VIEW=actions; else MENU_VIEW=details; fi
-            ;;
+
         k)
             TASK_RESULT=""
             if [ -x "$SBS_BIN" ]; then
@@ -1617,7 +1586,15 @@ cli_menu() {
             ;;
         f)
             TASK_RESULT=""
-            net_exit_refresh || TASK_RESULT="exit ip unavailable"
+            UI_REFRESHING=1
+            cli_menu_draw # 先把 refreshing 画出来，那一秒不至于像卡死
+            if net_exit_refresh; then
+                MENU_REFRESH_N=$((MENU_REFRESH_N + 1))
+                TASK_RESULT="refreshed x$MENU_REFRESH_N"
+            else
+                TASK_RESULT="exit ip unavailable"
+            fi
+            UI_REFRESHING=0
             ;;
         q | $'\e')
             ui_session_end
@@ -1639,7 +1616,7 @@ Usage:
   sbs start           启动
   sbs stop            停止
   sbs restart         重启
-  sbs status          查看状态与出口 IP
+  sbs status          查看状态
   sbs remove          卸载全部
 
 环境变量:
