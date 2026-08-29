@@ -37,6 +37,7 @@ readonly C_YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
 readonly C_CYAN="$(tput setaf 6 2>/dev/null || printf '')"
 readonly C_DIM="$(tput dim 2>/dev/null || printf '')"
 readonly C_BOLD="$(tput bold 2>/dev/null || printf '')"
+readonly C_REV="$(tput rev 2>/dev/null || printf '')"
 readonly C_RESET="$(tput sgr0 2>/dev/null || printf '')"
 
 # 四个都写 stderr。这是「返回值走 stdout」那条约定必须配套的另一半 ——
@@ -206,6 +207,48 @@ ui_redraw() {
     # \e[J 清到屏幕底：上一帧若更高（任务视图 8 行 -> 菜单 4 行），
     # 多出来的旧行必须抹掉，否则会留在框下面
     printf '%s%s%s\e[J%s' "$UI_SYNC_ON" "$UI_HOME" "${UI_BUF%$'\n'}" "$UI_SYNC_OFF" >&2
+}
+
+# ── footer 区 ──
+# 菜单永远绘制，footer 随当前活动伸缩：空闲 0 行、有结果 1 行、
+# 任务进行中 N 行（步骤列表）、失败 N 行（步骤 + 建议）。
+# 没有视图切换，没有模态 —— 这是整个界面唯一会变高的部分。
+FOOT_L=() FOOT_R=() FOOT_LC=() FOOT_RC=()
+foot_reset() { FOOT_L=() FOOT_R=() FOOT_LC=() FOOT_RC=(); }
+foot_add() { # $1=纯左 $2=纯右 $3=带色左 $4=带色右
+    FOOT_L+=("$1") FOOT_R+=("${2:-}") FOOT_LC+=("${3:-$1}") FOOT_RC+=("${4:-${2:-}}")
+}
+foot_rows() { printf '%s' "${#FOOT_L[@]}"; }
+
+# 读一个键，方向键与回车归一化成名字
+ui_read_key() {
+    local k rest
+    IFS= read -rsn1 k 2>/dev/null || {
+        printf 'esc'
+        return
+    }
+    case "$k" in
+    '')
+        printf 'enter'
+        return
+        ;;
+    $'\e')
+        # 可能是方向键的转义序列。短超时读后续字节：读不到就是裸 esc
+        IFS= read -rsn2 -t 0.05 rest 2>/dev/null || {
+            printf 'esc'
+            return
+        }
+        case "$rest" in
+        '[A') printf 'up' ;;
+        '[B') printf 'down' ;;
+        '[C') printf 'right' ;;
+        '[D') printf 'left' ;;
+        *) printf 'esc' ;;
+        esac
+        return
+        ;;
+    esac
+    printf '%s' "$k"
 }
 
 # ============================================================ L0 环境
@@ -884,7 +927,6 @@ cmd_status() {
     UI_BODY=0 # 命令行下的 status 就是 header，不留空 body
     ui_reset
     ui_menu_header
-    ui_pad 0
     ui_bot
     ui_out
     return 0
@@ -925,7 +967,6 @@ TASK_RIGHT=()
 TASK_HINT=()   # 失败时的说明行
 TASK_CUR=-1
 TASK_TICK=0
-TASK_RESULT=""  # 成功后留给菜单底部的一行
 
 task_begin() {
     TASK_TITLE="$1"
@@ -994,51 +1035,39 @@ task_wait() { # $1=pid
     wait "$pid"
 }
 
+# 把步骤列表塞进 footer 区，然后让菜单整体重绘。
+# 任务视图不再是「另一个界面」—— 菜单始终在上面，步骤长在下面。
 task_draw() {
-    local i st sym color used=0 done_all=1
-    UI_BODY=8 # 步骤最多 4 行 + 失败提示 3 行 + 空行
-    ui_reset
-    ui_menu_header
-    ui_lr "  $TASK_TITLE" "${TASK_SUB:+$TASK_SUB  }" \
-        "$C_BOLD  $TASK_TITLE$C_RESET" "$C_DIM${TASK_SUB:+$TASK_SUB  }$C_RESET"
-    used=1
+    local i st sym color
+    foot_reset
     for i in "${!TASK_NAMES[@]}"; do
         st="${TASK_STATE[$i]}"
         case "$st" in
         ok) sym="$UI_OK" color="$C_GREEN" ;;
         fail) sym="$UI_BAD" color="$C_RED" ;;
+        skip) sym="$UI_BAD" color="$C_YELLOW" ;;
         running)
             sym="${UI_SPIN[$((TASK_TICK % 4))]}"
             color="$C_CYAN"
             ;;
         *) sym=" " color="$C_DIM" ;;
         esac
-        [ "$st" = ok ] || done_all=0
-        ui_step "$sym" "${TASK_NAMES[$i]}" "${TASK_DETAIL[$i]}" "${TASK_RIGHT[$i]}" "$color"
-        used=$((used + 1))
+        foot_add \
+            "  $sym  $(printf '%-10s' "${TASK_NAMES[$i]}")${TASK_DETAIL[$i]}" \
+            "${TASK_RIGHT[$i]:+${TASK_RIGHT[$i]}  }" \
+            "  $color$sym$C_RESET  $C_DIM$(printf '%-10s' "${TASK_NAMES[$i]}")$C_RESET${TASK_DETAIL[$i]}" \
+            "$C_DIM${TASK_RIGHT[$i]:+${TASK_RIGHT[$i]}  }$C_RESET"
     done
     if [ "${#TASK_HINT[@]}" -gt 0 ]; then
-        ui_blank
-        used=$((used + 1))
+        foot_add "" ""
         local h
         for h in "${TASK_HINT[@]}"; do
-            ui_lr "  $h" "" "$C_YELLOW  $h$C_RESET" ""
-            used=$((used + 1))
+            foot_add "  $h" "" "$C_DIM  $h$C_RESET" ""
         done
     fi
-    ui_pad "$used"
-    ui_sep
-    if [ "${#TASK_HINT[@]}" -gt 0 ]; then
-        ui_lr "  any key to continue" "" "$C_DIM  any key to continue$C_RESET" ""
-    elif [ "$done_all" -eq 1 ]; then
-        ui_lr "  done" "" "$C_GREEN  done$C_RESET" ""
-    else
-        local sp="${UI_SPIN[$((TASK_TICK % 4))]}"
-        ui_lr "  $sp  working" "" "$C_CYAN  $sp$C_RESET  ${C_DIM}working$C_RESET" ""
-    fi
-    ui_bot
-    ui_redraw
+    cli_menu_draw
 }
+
 
 # ── 带真进度的下载 ──
 #
@@ -1100,79 +1129,91 @@ dl_with_progress() {
 
 # ── 选择视图：在同一个框里做单键选择 ──
 # $1=标题 $2..=「键|标签」，返回按下的键
+# footer 里的横向选择。方向键切换、回车确认、esc 取消。
+# $1=提示 $2..=选项文本，选中的下标写进 UI_CHOICE（-1 表示取消）
 ui_choose() {
     local title="$1"
     shift
-    local used=1 opt key
-    UI_BODY=8
-    ui_reset
-    ui_menu_header
-    ui_lr "  $title" "" "$C_BOLD  $title$C_RESET" ""
-    ui_blank
-    used=2
-    for opt in "$@"; do
-        ui_lr "    ${opt%%|*}   ${opt#*|}" "" \
-            "    ${C_CYAN}${opt%%|*}$C_RESET   ${opt#*|}" ""
-        used=$((used + 1))
+    local opts=("$@")
+    local cur=0 key i lp lc
+    while true; do
+        foot_reset
+        foot_add "  $title" "<>  enter  esc  " \
+            "$C_DIM  $title$C_RESET" "$C_DIM<>  enter  esc$C_RESET  "
+        lp="   " lc="   "
+        for i in "${!opts[@]}"; do
+            if [ "$i" -eq "$cur" ]; then
+                lp+=" ${opts[$i]}   "
+                lc+="$C_REV ${opts[$i]} $C_RESET  "
+            else
+                lp+=" ${opts[$i]}   "
+                lc+="$C_DIM ${opts[$i]} $C_RESET  "
+            fi
+        done
+        foot_add "$lp" "" "$lc" ""
+        cli_menu_draw
+        key=$(ui_read_key)
+        case "$key" in
+        left | up) cur=$(((cur - 1 + ${#opts[@]}) % ${#opts[@]})) ;;
+        right | down) cur=$(((cur + 1) % ${#opts[@]})) ;;
+        enter)
+            UI_CHOICE=$cur
+            return 0
+            ;;
+        esc | q)
+            UI_CHOICE=-1
+            return 1
+            ;;
+        esac
     done
-    ui_pad "$used"
-    ui_sep
-    ui_lr "  esc  cancel" "" "$C_DIM  esc  cancel$C_RESET" ""
-    ui_bot
-    ui_redraw
-    read -rsn1 key 2>/dev/null || key=""
-    printf '%s' "$key"
 }
 
+
 # ── 瞬时动作：成功就地反馈（不离开菜单），失败才进任务视图停住 ──
-menu_quick() { # $1=动作函数 $2=成功文案 $3=任务名
+# 瞬时动作。成功在 footer 留一行，失败留两行（原因 + 去哪看日志）
+menu_quick() { # $1=动作函数 $2=成功文案 $3=动作名
     local out rc first
     out=$("$1" 2>&1)
     rc=$?
+    foot_reset
     if [ "$rc" -eq 0 ]; then
-        TASK_RESULT="$2"
+        foot_add "  $2" "" "$C_GREEN  $2$C_RESET" ""
         return 0
     fi
     first=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -viE '^\[info\]|^$' | head -n 1)
-    task_begin "$3" "" "$3"
-    task_step 0
-    task_fail "failed" "$(ui_fit "${first:-something went wrong}" 52)" \
-        "" "journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
-    read -rsn1 _ 2>/dev/null || true
+    foot_add "  $3 failed" "" "$C_RED  $3 failed$C_RESET" ""
+    foot_add "  $(ui_fit "${first:-something went wrong}" 52)" "" \
+        "$C_DIM  $(ui_fit "${first:-something went wrong}" 52)$C_RESET" ""
     return 1
 }
 
 # ── 订阅地址：沿用现有 / 输入新的 ──
+# 订阅地址：有旧值先问要不要沿用，要新的就在 footer 里输入
 menu_resolve_sub() {
-    local cur key url
+    local cur url
     cur=$(cfg_url_get 2>/dev/null) || cur=""
     if [ -n "$cur" ]; then
-        key=$(ui_choose "subscription" "y|keep   $(ui_fit "$cur" 38)" "n|enter a new one")
-        case "$key" in
-        y) printf '%s\n' "$cur"; return 0 ;;
-        n) ;;
-        *) return 1 ;;
-        esac
+        ui_choose "subscription  $(ui_fit "$cur" 30)" "keep it" "enter a new one" || return 1
+        [ "$UI_CHOICE" -eq 0 ] && {
+            printf '%s\n' "$cur"
+            return 0
+        }
     fi
-    # 需要打字：框正常画完，输入行紧贴框底（框内做 readline 要自己管光标，不值得）
-    UI_BODY=8
-    ui_reset
-    ui_menu_header
-    ui_lr "  subscription" "" "$C_BOLD  subscription$C_RESET" ""
-    ui_blank
-    ui_lr "  enter the subscription URL below" "" "$C_DIM  enter the subscription URL below$C_RESET" ""
-    ui_pad 3
-    ui_sep
-    ui_lr "  esc  cancel" "" "$C_DIM  esc  cancel$C_RESET" ""
-    ui_bot
-    ui_redraw
-    printf '\n  %s>%s ' "$C_CYAN" "$C_RESET" >&2
-    printf '%s' "$UI_SHOW" >&2
-    read -r -e -i "$cur" url 2>/dev/null || url="" # -e 开 readline，-i 预填现有地址
+
+    foot_reset
+    foot_add "  subscription url" "enter  esc  " \
+        "$C_DIM  subscription url$C_RESET" "$C_DIM""enter  esc$C_RESET  "
+    foot_add "  > " "" "  $C_CYAN>$C_RESET " ""
+    cli_menu_draw
+    # 光标停到 footer 最后一行（即底边上面那行）的输入位置。
+    # 用相对上移而不是绝对行号 —— header 可能是 3 行也可能 4 行（restarts 那条）
+    printf '\e[1A\e[5G%s' "$UI_SHOW" >&2
+    read -r -e -i "$cur" url 2>/dev/null || url="" # -e 开 readline，-i 预填旧值
     printf '%s' "$UI_HIDE" >&2
     cfg_url_valid "$url" || return 1
     printf '%s\n' "$url"
 }
+
 
 # ── 任务：更新订阅配置 ──
 task_update_config() {
@@ -1215,8 +1256,11 @@ task_update_config() {
         return 1
     }
     task_ok "${had:+backup kept}" ""
-    TASK_RESULT="config updated"
-    svc_is_active && TASK_RESULT="config updated - restart to apply"
+    # 步骤全绿本身就是结果，不再另起一行。只在需要重启才生效时补一句
+    svc_is_active && {
+        TASK_HINT=("restart to apply the new config")
+        task_draw
+    }
     return 0
 }
 
@@ -1267,7 +1311,8 @@ task_update_self() {
     fi
     rm -rf "$tmpdir"
     task_ok "$SBS_EXEC" ""
-    TASK_RESULT="sbs updated - restart it"
+    TASK_HINT=("run sbs again to load the new version")
+    task_draw
     return 0
 }
 
@@ -1275,11 +1320,9 @@ task_update_self() {
 # 确认改成框内单键（原来是 read 输入 + 回车，和菜单其余部分不一致）。
 # 用 d 而不是 y 做确认键：手滑按到 y 的概率远高于连按两次 d。
 menu_remove_flow() {
-    local key
-    key=$(ui_choose "remove everything?" \
-        "d|yes - delete kernel, config and sbs" \
-        "n|cancel")
-    [ "$key" = d ] || return 1
+    # 默认停在 no —— 危险操作不该按一下就走
+    ui_choose "remove kernel, config and sbs?" "no" "yes" || return 1
+    [ "$UI_CHOICE" -eq 1 ] || return 1
 
     task_begin "remove" "" service files script
     task_step 0
@@ -1297,7 +1340,7 @@ menu_remove_flow() {
 
 # ── 菜单里的「装/更新内核」完整流程 ──
 menu_kernel_flow() {
-    local tags stable beta key tag url tmp
+    local tags stable beta tag url tmp
     core_detect_target >/dev/null 2>&1 || {
         task_begin "update kernel" "" resolve
         task_step 0
@@ -1325,15 +1368,13 @@ menu_kernel_flow() {
     beta=$(printf '%s\n' "$tags" | sed -n 2p)
     task_ok "stable ${stable#v}    beta ${beta#v}" ""
 
-    key=$(ui_choose "which release?" "s|stable   ${stable#v}" "b|beta     ${beta#v}")
-    case "$key" in
-    s) tag="$stable" ;;
-    b)
-        [ -n "$beta" ] || return 1
-        tag="$beta"
-        ;;
-    *) return 0 ;; # esc / 其它键 = 取消，不算失败
-    esac
+    if [ -n "$beta" ]; then
+        ui_choose "which release?" "stable ${stable#v}" "beta ${beta#v}" || return 130
+        [ "$UI_CHOICE" -eq 0 ] && tag="$stable" || tag="$beta"
+    else
+        ui_choose "which release?" "stable ${stable#v}" || return 130
+        tag="$stable"
+    fi
     url=$(gh_asset_url "$tag")
     task_install_kernel "$tag" "$url"
 }
@@ -1407,7 +1448,10 @@ task_install_kernel() { # $1=tag $2=下载地址
     rm -rf "$stage"
     svc_write_unit >/dev/null 2>&1
     task_ok "$SBS_BIN" "$(fmt_size "$(stat -c %s "$SBS_BIN" 2>/dev/null || echo 0)")"
-    TASK_RESULT="kernel -> ${tag#v}"
+    svc_is_active && {
+        TASK_HINT=("restart to run the new kernel")
+        task_draw
+    }
     return 0
 }
 
@@ -1479,23 +1523,22 @@ ui_menu_header() {
         ui_lr "  restarted $nrs times - check the logs" "" \
             "$C_YELLOW  restarted $nrs times - check the logs$C_RESET" ""
     fi
-
-    ui_sep
 }
 
 UI_REFRESHING=0 # f 键刷新出口 IP 期间置 1，让 header 显示 refreshing
 
 cli_menu_draw() {
-    UI_BODY=4 # 8 个动作正好 2 列 4 行填满，不留空行
+    UI_BODY=5 # 9 个动作：2 列 4 行 + q 单独一行
     ui_reset
     ui_menu_header
+    ui_sep
+
     # k 一个键两种含义：没装内核时是 install（内核+unit+订阅一条龙），
     # 装了之后才是 update kernel。全新机器上敲 sbs 必须有路可走。
     local klabel
     if [ -x "$SBS_BIN" ]; then klabel="update kernel"; else klabel="install"; fi
 
     if [ ! -x "$SBS_BIN" ]; then
-        # 内核都没有，除了装什么都做不了
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "$C_DIM" "$C_DIM"
         ui_item r restart "u" "update sbs" "$C_DIM" ""
@@ -1511,22 +1554,22 @@ cli_menu_draw() {
         ui_item r restart "u" "update sbs" "$C_DIM" ""
         ui_item f refresh "d" remove "" ""
     fi
-    ui_pad 4
-    cli_menu_footer
-}
+    ui_item q quit "" "" "" ""
+    ui_pad 5
 
-# 底部提示行。details 模式下多一个「切回动作列表」的提示
-cli_menu_footer() {
-    ui_sep
-    # 左边是上一个动作的瞬时结果，右边是退出键。两种性质不同的东西分居两侧，
-    # 不再和 f refresh 挤成一行
-    local msg="${TASK_RESULT:-}"
-    ui_lr "  $msg" "q  quit  " "$C_GREEN  $msg$C_RESET" "${C_CYAN}q$C_RESET  quit  "
+    # footer 区：有内容才画分隔线
+    local i
+    if [ "${#FOOT_L[@]}" -gt 0 ]; then
+        ui_sep
+        for i in "${!FOOT_L[@]}"; do
+            ui_lr "${FOOT_L[$i]}" "${FOOT_R[$i]}" "${FOOT_LC[$i]}" "${FOOT_RC[$i]}"
+        done
+    fi
     ui_bot
     ui_redraw
 }
 
-cli_menu_pause() {
+u_pause() {
     echo
     printf '%s' "${C_DIM}  按任意键返回菜单${C_RESET}"
     read -rsn1 _ 2>/dev/null || true
@@ -1547,62 +1590,46 @@ cli_menu() {
     ui_session_begin
     while true; do
         cli_menu_draw
-        read -rsn1 key 2>/dev/null || return 0
+        key=$(ui_read_key)
+        # 上一个动作的结果显示到下次按键为止
+        foot_reset
         case "$key" in
-        s) TASK_RESULT=""; menu_quick cmd_start "started" "start" ;;
-        x) TASK_RESULT=""; menu_quick cmd_stop "stopped" "stop" ;;
-        r) TASK_RESULT=""; menu_quick cmd_restart "restarted" "restart" ;;
-
+        s) menu_quick cmd_start "started" "start" ;;
+        x) menu_quick cmd_stop "stopped" "stop" ;;
+        r) menu_quick cmd_restart "restarted" "restart" ;;
         k)
-            TASK_RESULT=""
             if [ -x "$SBS_BIN" ]; then
                 menu_kernel_flow
-                case $? in 0 | 130) ;; *) read -rsn1 _ 2>/dev/null || true ;; esac
             else
-                # 全新机器：装内核，紧接着要订阅
-                if menu_kernel_flow; then
-                    task_update_config || read -rsn1 _ 2>/dev/null || true
-                else
-                    read -rsn1 _ 2>/dev/null || true
-                fi
+                menu_kernel_flow && task_update_config
             fi
             ;;
-        c)
-            TASK_RESULT=""
-            task_update_config
-            # 130 = 用户按 esc 取消，直接回菜单，不算失败
-            case $? in 0 | 130) ;; *) read -rsn1 _ 2>/dev/null || true ;; esac
-            ;;
+        c) task_update_config ;;
         u)
-            TASK_RESULT=""
             if task_update_self; then
                 ui_session_end
                 core_info "sbs 已更新，重新运行以加载新版本"
                 return 0
             fi
-            read -rsn1 _ 2>/dev/null || true
             ;;
         d)
-            TASK_RESULT=""
-            # 只有确认删除才离开菜单；取消直接回菜单，不再等按键
             if menu_remove_flow; then
                 ui_session_end
                 return 0
             fi
             ;;
         f)
-            TASK_RESULT=""
-            UI_REFRESHING=1
-            cli_menu_draw # 先把 refreshing 画出来，那一秒不至于像卡死
+            foot_reset
+            foot_add "  refreshing" "" "$C_CYAN  ${UI_SPIN[0]}$C_RESET  ${C_DIM}refreshing$C_RESET" ""
+            cli_menu_draw
+            foot_reset
             if net_exit_refresh; then
-                # 不计数 —— 年龄归零成 0s ago 本身就是最好的确认
-                TASK_RESULT="refreshed"
+                foot_add "  refreshed" "" "$C_GREEN  refreshed$C_RESET" ""
             else
-                TASK_RESULT="exit ip unavailable"
+                foot_add "  exit ip unavailable" "" "$C_YELLOW  exit ip unavailable$C_RESET" ""
             fi
-            UI_REFRESHING=0
             ;;
-        q | $'\e')
+        q)
             ui_session_end
             return 0
             ;;
