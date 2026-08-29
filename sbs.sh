@@ -77,36 +77,75 @@ fmt_size() {
 #   2. 中文是双宽字符，${#str} 数的是字符数不是列数 —— 所以界面一律用英文
 UI_W=58
 UI_IN=$((UI_W - 2))
+UI_BODY=8 # body 固定行数，重绘时框才不跳动
 
-ui_bar() {
-    local n=$1 s
-    printf -v s '%*s' "$n" ''
-    printf '%s' "${s// /─}"
+# 符号集。Unicode 一档更好看，但两种场景必须降级成纯 ASCII：
+#   TERM=linux  物理控制台没有 Unicode 字体
+#   非 UTF-8 locale
+# 另外 SBS_ASCII=1 可手动强制。
+# 注：制表符 ─ │ ╭ 等是「东亚歧义宽度」，终端若把歧义当双宽，框会烂；
+# 而 ✓ (U+2713) / ✗ (U+2717) 是 Neutral，恒占 1 列，比框线本身更安全。
+ui_init_charset() {
+    local ascii=0
+    [ -n "${SBS_ASCII:-}" ] && ascii=1
+    [ "${TERM:-}" = linux ] && ascii=1
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]*8* | *[Uu][Tt][Ff]8*) ;; *) ascii=1 ;; esac
+
+    if [ "$ascii" -eq 1 ]; then
+        UI_H='-' UI_V='|' UI_TL='+' UI_TR='+' UI_BL='+' UI_BR='+' UI_ML='+' UI_MR='+'
+        UI_OK='+' UI_BAD='x'
+    else
+        UI_H='─' UI_V='│' UI_TL='╭' UI_TR='╮' UI_BL='╰' UI_BR='╯' UI_ML='├' UI_MR='┤'
+        UI_OK='✓' UI_BAD='✗'
+    fi
+    UI_SPIN=('|' '/' '-' $'\\')
 }
-ui_top() { printf '╭%s╮\n' "$(ui_bar $UI_IN)"; }
-ui_bot() { printf '╰%s╯\n' "$(ui_bar $UI_IN)"; }
-ui_sep() { printf '├%s┤\n' "$(ui_bar $UI_IN)"; }
-ui_blank() { printf '│%*s│\n' "$UI_IN" ''; }
 
-# $1 纯文本左 $2 纯文本右 $3 带色左 $4 带色右
+# 终端控制
+UI_HIDE=$'\e[?25l'
+UI_SHOW=$'\e[?25h'
+UI_HOME=$'\e[H'
+UI_CLS=$'\e[2J\e[H'
+UI_SYNC_ON=$'\e[?2026h'  # 同步输出：终端攒够一帧再显示，不支持的会忽略
+UI_SYNC_OFF=$'\e[?2026l'
+
+# 帧缓冲。整帧攒好一次写出 —— 逐行写会让终端边收边画，走 SSH 尤其明显
+UI_BUF=""
+ui_reset() { UI_BUF=""; }
+ui_add() { UI_BUF+="$1"$'\n'; }
+
+# ── 绘制原语。一律写入帧缓冲，由 ui_out / ui_redraw 统一输出 ──
+ui_bar() {
+    local n=$1
+    local t
+    printf -v t '%*s' "$n" ''
+    printf '%s' "${t// /$UI_H}"
+}
+ui_top() { ui_add "$(printf '%s%s%s' "$UI_TL" "$(ui_bar $UI_IN)" "$UI_TR")"; }
+ui_bot() { ui_add "$(printf '%s%s%s' "$UI_BL" "$(ui_bar $UI_IN)" "$UI_BR")"; }
+ui_sep() { ui_add "$(printf '%s%s%s' "$UI_ML" "$(ui_bar $UI_IN)" "$UI_MR")"; }
+ui_blank() { ui_add "$(printf '%s%*s%s' "$UI_V" "$UI_IN" '' "$UI_V")"; }
+
+# 一行左右两段。$1/$2 是纯文本（只用来算 padding），$3/$4 是带色版本（负责显示）。
+# 必须分开：颜色转义序列会被 ${#str} 算进长度，拿带色串算 padding 必歪。
 ui_lr() {
     local pad=$((UI_IN - ${#1} - ${#2}))
     [ "$pad" -lt 0 ] && pad=0
-    printf '│%s%*s%s│\n' "$3" "$pad" '' "$4"
+    ui_add "$(printf '%s%s%*s%s%s' "$UI_V" "${3:-$1}" "$pad" '' "${4:-$2}" "$UI_V")"
 }
 
-# 分区标题嵌在边线上：├─ service ────────┤
-ui_sec() { # $1=标题 $2=左角(默认├) $3=右角(默认┤)
+# 分区标题嵌在边线上：├─ service ────┤
+ui_sec() {
     local t="$1"
-    local lc="${2:-├}"
-    local rc="${3:-┤}"
+    local lc="${2:-$UI_ML}"
+    local rc="${3:-$UI_MR}"
     local n=$((UI_IN - ${#t} - 3))
     [ "$n" -lt 0 ] && n=0
-    printf '%s─ %s%s%s %s%s\n' "$lc" "$C_DIM" "$t" "$C_RESET" "$(ui_bar $n)" "$rc"
+    ui_add "$(printf '%s%s %s%s%s %s%s' "$lc" "$UI_H" "$C_DIM" "$t" "$C_RESET" "$(ui_bar $n)" "$rc")"
 }
 
-# 键值行。键固定 10 列并置灰，值正常色，$3 为右对齐的附加信息
-ui_kv() { # $1=键 $2=值(纯) $3=右(纯) $4=值(带色,省略则同纯) $5=右(带色,省略则同纯)
+# 键值行，键固定 10 列并置灰
+ui_kv() {
     local plain colored
     printf -v plain '  %-10s%s' "$1" "$2"
     printf -v colored '  %s%-10s%s%s' "$C_DIM" "$1" "$C_RESET" "${4:-$2}"
@@ -114,15 +153,14 @@ ui_kv() { # $1=键 $2=值(纯) $3=右(纯) $4=值(带色,省略则同纯) $5=右
 }
 
 # 值太长时截断，保证不撑破框
-ui_fit() { # $1=文本 $2=可用列数
+ui_fit() {
     local t="$1"
     local n="$2"
     if [ "${#t}" -le "$n" ]; then printf '%s' "$t"; else printf '%s...' "${t:0:$((n - 3))}"; fi
 }
 
-# 一行两个条目。$5/$6 为 dim 时该项置灰（表示当前不可用）
 # 一个「键 + 标签」单元格。$3 非空时整体置灰，表示该动作当前不可用
-_ui_cell() { # $1=键 $2=标签 $3=置灰色(可空)
+_ui_cell() {
     if [ -n "$3" ]; then
         printf '%s%s   %-15s%s' "$3" "$1" "$2" "$C_RESET"
     else
@@ -130,12 +168,38 @@ _ui_cell() { # $1=键 $2=标签 $3=置灰色(可空)
     fi
 }
 
-ui_item() { # $1..$4=两组键与标签  $5/$6=各自的置灰色(可空)
+ui_item() {
     local plain colored
     printf -v plain '    %s   %-15s  %s   %-15s' "$1" "$2" "$3" "$4"
     printf -v colored '    %s  %s' "$(_ui_cell "$1" "$2" "${5:-}")" "$(_ui_cell "$3" "$4" "${6:-}")"
     ui_lr "$plain" "" "$colored" ""
 }
+
+# 步骤行：状态列前置 1 列。$1=状态符 $2=步骤名 $3=细节 $4=右侧 $5=状态色
+ui_step() {
+    local plain colored
+    printf -v plain '  %s  %-10s%s' "$1" "$2" "$3"
+    printf -v colored '  %s%s%s  %s%-10s%s%s' "$5" "$1" "$C_RESET" "$C_DIM" "$2" "$C_RESET" "$3"
+    ui_lr "$plain" "${4:+$4  }" "$colored" "$C_DIM${4:+$4  }$C_RESET"
+}
+
+# body 补齐到固定高度，重绘时框才不跳动
+ui_pad() {
+    local n=$1
+    while [ "$n" -lt "$UI_BODY" ]; do
+        ui_blank
+        n=$((n + 1))
+    done
+}
+
+# 一次性输出（status 这类静态面板）
+UI_IN_MENU=0
+# 菜单里原地重绘，命令行下顺序输出
+ui_out() {
+    if [ "$UI_IN_MENU" -eq 1 ]; then ui_redraw; else printf '%s\n' "${UI_BUF%$'\n'}"; fi
+}
+# 动画重绘：光标归位 + 同步输出，不清屏（清屏会闪）
+ui_redraw() { printf '%s%s%s%s' "$UI_SYNC_ON" "$UI_HOME" "${UI_BUF%$'\n'}" "$UI_SYNC_OFF"; }
 
 # ============================================================ L0 环境
 core_check_deps() {
@@ -389,47 +453,59 @@ kern_version_short() {
 #
 # 注：实测 tar 与 install 都会先 unlink，不会撞 Text file busy；只有 cp 这类
 # 就地写入才会。所以选 mv 不是为了绕开 ETXTBSY，而是为了「先验证再顶替」。
-kern_install() { # $1=下载地址
-    local url="$1"
-    local stage="$SBS_WORK_DIR/.stage.$$"
-    local tarball="$stage/sing-box.tar.gz"
-    local selfcheck
+# 解压到临时目录。整包解出来，LICENSE 之类随临时目录一起删
+kern_extract() { # $1=stage $2=tarball
+    tar --strip-components=1 -xzf "$2" -C "$1" || return 1
+    [ -f "$1/sing-box" ] || return 1
+    chmod +x "$1/sing-box"
+}
 
-    rm -rf "$stage"
-    mkdir -p "$stage" || {
-        core_error "无法创建临时目录 $stage"
+# 顶替前自检：架构选错、libc 不匹配、包损坏都在这一步暴露
+kern_selfcheck() { # $1=stage，成功时 echo 版本行
+    local out
+    out=$("$1/sing-box" version 2>&1) || {
+        printf '%s\n' "${out%%$'\n'*}"
         return 1
     }
+    printf '%s\n' "${out%%$'\n'*}"
+}
+
+# 同盘改名顶替。GNU tar 是「先 unlink 再新建」，直接往最终位置解压的话，
+# 解压一开始旧二进制就没了，中途失败就两头空。所以先在临时目录里做完再换。
+kern_replace() { # $1=stage
+    mv -f "$1/sing-box" "$SBS_BIN"
+}
+
+kern_stage_new() {
+    local d="$SBS_WORK_DIR/.stage.$$"
+    rm -rf "$d"
+    mkdir -p "$d" || return 1
+    printf '%s\n' "$d"
+}
+
+# 非交互路径（CLI / 非 tty）。交互路径见 task_install_kernel
+kern_install() { # $1=下载地址
+    local url="$1" stage tarball selfcheck
+    stage=$(kern_stage_new) || {
+        core_error "无法创建临时目录"
+        return 1
+    }
+    tarball="$stage/sing-box.tar.gz"
 
     core_info "downloading sing-box."
-    sb_fetch "$tarball" "$url" || {
+    sb_fetch "$tarball" "$url" || { rm -rf "$stage"; return 1; }
+    kern_extract "$stage" "$tarball" || {
+        core_error "解压失败或包内没有 sing-box"
         rm -rf "$stage"
         return 1
     }
-
-    # 整包解到临时目录，LICENSE 之类跟着进来也无所谓，随临时目录一起删
-    tar --strip-components=1 -xzf "$tarball" -C "$stage" || {
-        core_error "解压失败"
+    selfcheck=$(kern_selfcheck "$stage") || {
+        core_error "新二进制无法运行，保留原有版本。输出：$selfcheck"
         rm -rf "$stage"
         return 1
     }
-
-    [ -f "$stage/sing-box" ] || {
-        core_error "包里没有 sing-box 可执行文件"
-        rm -rf "$stage"
-        return 1
-    }
-    chmod +x "$stage/sing-box"
-
-    selfcheck=$("$stage/sing-box" version 2>&1) || {
-        core_error "新二进制无法运行，保留原有版本。输出：${selfcheck%%$'\n'*}"
-        rm -rf "$stage"
-        return 1
-    }
-    selfcheck=${selfcheck%%$'\n'*}
     core_info "self-check ok: $selfcheck"
-
-    mv -f "$stage/sing-box" "$SBS_BIN" || {
+    kern_replace "$stage" || {
         core_error "替换失败，保留原有版本"
         rm -rf "$stage"
         return 1
@@ -437,8 +513,6 @@ kern_install() { # $1=下载地址
     rm -rf "$stage"
     core_info "sing-box installed to $SBS_BIN"
 }
-
-
 
 # ============================================================ L2 配置
 cfg_url_get() {
@@ -452,6 +526,13 @@ cfg_url_get() {
 cfg_url_set() { printf 'config_url="%s"\n' "$1" >"$SBS_SHARE"; }
 
 # 配置里有几个真正的出站节点（排除 direct/block 与分组类）
+# 数任意配置文件里的节点
+cfg_node_count_of() {
+    [ -f "$1" ] || return 1
+    jq '[.outbounds[]? | select(.type != "direct" and .type != "block" and .type != "selector" and .type != "urltest")] | length' \
+        "$1" 2>/dev/null
+}
+
 cfg_node_count() {
     [ -f "$SBS_CONFIG" ] || return 1
     jq '[.outbounds[]? | select(.type != "direct" and .type != "block" and .type != "selector" and .type != "urltest")] | length' \
@@ -478,44 +559,52 @@ cfg_check() {
     return 1
 }
 
-# 拉订阅并原地校验，坏了就回滚。订阅地址是用户自己的服务，不走反代
-cfg_fetch() { # $1=订阅地址
-    local url="$1"
-    local backup="$SBS_CONFIG.backup"
-    local tmp="$SBS_WORK_DIR/.config.$$.json"
+# 拉订阅到临时文件。订阅地址是用户自己的服务，不走反代
+cfg_download() { # $1=url $2=目标临时文件
+    curl -fL --connect-timeout 5 --max-time 60 --retry 2 -s -o "$2" "$1"
+}
 
+# 校验一份配置文件；不合法时把 sing-box 的原始输出打到 stdout
+cfg_validate() { # $1=文件
+    [ -x "$SBS_BIN" ] || return 0 # 内核没装就跳过校验
+    local out
+    out=$("$SBS_BIN" check -c "$1" 2>&1)
+    [ -z "$out" ] && return 0
+    printf '%s\n' "$out"
+    return 1
+}
+
+# 落盘并留备份。返回 0 且 stdout 为 backup 时表示有旧版可回退
+cfg_commit() { # $1=临时文件
+    local backup="$SBS_CONFIG.backup"
+    if [ -f "$SBS_CONFIG" ]; then
+        cp -f "$SBS_CONFIG" "$backup" && printf 'backup\n'
+    fi
+    mv -f "$1" "$SBS_CONFIG"
+}
+
+# 非交互路径（CLI / 非 tty）
+cfg_fetch() { # $1=订阅地址
+    local url="$1" tmp="$SBS_WORK_DIR/.config.$$.json" out had
     core_info "fetching config.json"
-    # -f：HTTP 错误码不当成功，否则 404 页面会被存成配置文件
-    if ! curl -fL --connect-timeout 5 --max-time 60 --retry 2 --progress-bar -o "$tmp" "$url"; then
+    if ! cfg_download "$url" "$tmp"; then
         core_error "订阅拉取失败，原配置未动"
         rm -f "$tmp"
         return 1
     fi
-
-    if [ -x "$SBS_BIN" ]; then
-        local out
-        out=$("$SBS_BIN" check -c "$tmp" 2>&1)
-        if [ -n "$out" ]; then
-            core_error "拉到的配置不合法，原配置未动"
-            printf '%s\n' "$out" >&2
-            rm -f "$tmp"
-            return 1
-        fi
-    else
-        core_warn "sing-box 未安装，跳过配置校验"
+    if ! out=$(cfg_validate "$tmp"); then
+        core_error "拉到的配置不合法，原配置未动"
+        printf '%s\n' "$out" >&2
+        rm -f "$tmp"
+        return 1
     fi
-
-    local had_old=0
-    if [ -f "$SBS_CONFIG" ]; then
-        cp -f "$SBS_CONFIG" "$backup" && had_old=1
-    fi
-    mv -f "$tmp" "$SBS_CONFIG" || {
+    had=$(cfg_commit "$tmp") || {
         core_error "写入配置失败"
         rm -f "$tmp"
         return 1
     }
-    if [ "$had_old" -eq 1 ]; then
-        core_info "config.json 已更新（上一版备份在 $backup）"
+    if [ "$had" = backup ]; then
+        core_info "config.json 已更新（上一版备份在 $SBS_CONFIG.backup）"
     else
         core_info "config.json 已写入"
     fi
@@ -658,7 +747,32 @@ _resolve_sub_url() {
     printf '%s\n' "$url"
 }
 
+# 进入 / 退出全屏界面会话。命令行直接调 install 时也要用
+ui_session_begin() {
+    UI_IN_MENU=1
+    printf '%s%s' "$UI_CLS" "$UI_HIDE"
+    trap 'UI_IN_MENU=0; printf "%s" "$UI_SHOW"' EXIT INT TERM
+}
+ui_session_end() {
+    UI_IN_MENU=0
+    printf '%s%s' "$UI_SHOW" "$UI_CLS"
+    trap - EXIT INT TERM
+}
+
 cmd_install() {
+    # tty 下走任务视图；管道 / 脚本里退回朴素输出
+    if [ -t 0 ] && [ -t 1 ] && [ "$UI_IN_MENU" -eq 0 ]; then
+        local rc
+        ui_session_begin
+        menu_kernel_flow && task_update_config
+        rc=$?
+        ui_session_end
+        return "$rc"
+    fi
+    _cmd_install_plain
+}
+
+_cmd_install_plain() {
     local url sub
     core_detect_target || return 1
     url=$(_choose_release) || return 1
@@ -821,7 +935,8 @@ cmd_status() {
     fi
 
     # ---- 画 ----
-    ui_sec service '╭' '╮'
+    ui_reset
+    ui_sec service "$UI_TL" "$UI_TR"
     ui_kv status "$state" "${up:+$up }" "$scolor$state$C_RESET" "$C_DIM${up:+$up }$C_RESET"
     ui_kv pid "$(printf '%-12s mem %-9s cpu %s' "$pid" "$mem" "$cpu")" ""
     ui_kv restarts "$nrs" ""
@@ -840,6 +955,7 @@ cmd_status() {
     ui_kv source "$(ui_fit "$src" 42)" ""
     ui_kv nodes "$(printf '%-10s updated %s' "$nodes" "$mtime")" "$valid " "" "$vcolor$valid$C_RESET "
     ui_bot
+    ui_out
     return 0
 }
 
@@ -861,8 +977,509 @@ cmd_remove() {
     core_info "已全部删除"
 }
 
+# ============================================================ L4 任务视图
+#
+# 一个任务 = 若干步骤。每步有状态（pending / running / ok / fail）、细节、右侧信息。
+# 画在与菜单同一个框里：header 三行不变，只有 body 换成步骤列表。
+#
+# 成功 -> 自动回菜单，结果留在菜单底部
+# 失败 -> 停在失败那一步，附一句「下一步怎么办」，等按键
+
+TASK_TITLE=""
+TASK_SUB=""
+TASK_NAMES=()
+TASK_STATE=()
+TASK_DETAIL=()
+TASK_RIGHT=()
+TASK_HINT=()   # 失败时的说明行
+TASK_CUR=-1
+TASK_TICK=0
+TASK_RESULT=""  # 成功后留给菜单底部的一行
+
+task_begin() {
+    TASK_TITLE="$1"
+    TASK_SUB="${2:-}"
+    TASK_NAMES=()
+    TASK_STATE=()
+    TASK_DETAIL=()
+    TASK_RIGHT=()
+    TASK_HINT=()
+    TASK_CUR=-1
+    TASK_TICK=0
+    shift 2 2>/dev/null || shift $#
+    local n
+    for n in "$@"; do
+        TASK_NAMES+=("$n")
+        TASK_STATE+=(pending)
+        TASK_DETAIL+=("")
+        TASK_RIGHT+=("")
+    done
+}
+
+# 进入第 N 步（0 起）
+task_step() {
+    TASK_CUR=$1
+    TASK_STATE[$1]=running
+    [ -n "${2:-}" ] && TASK_DETAIL[$1]="$2"
+    task_draw
+}
+task_detail() { [ "$TASK_CUR" -ge 0 ] && TASK_DETAIL[$TASK_CUR]="$1"; task_draw; }
+task_ok() {
+    [ "$TASK_CUR" -ge 0 ] || return 0
+    TASK_STATE[$TASK_CUR]=ok
+    [ $# -ge 1 ] && TASK_DETAIL[$TASK_CUR]="$1"
+    # 总是覆盖（含置空）：下载轮询会往右侧写速率/eta，完成后必须清掉
+    TASK_RIGHT[$TASK_CUR]="${2:-}"
+    task_draw
+}
+task_fail() {
+    [ "$TASK_CUR" -ge 0 ] && TASK_STATE[$TASK_CUR]=fail
+    [ "$TASK_CUR" -ge 0 ] && TASK_RIGHT[$TASK_CUR]="" # 清掉上一次轮询留下的速率/eta
+    [ -n "${1:-}" ] && TASK_DETAIL[$TASK_CUR]="$1"
+    TASK_HINT=("${@:2}")
+    task_draw
+}
+
+# 非阻塞探一个键。按下 esc 返回 0，用于中断正在跑的任务
+ui_esc_pressed() {
+    local k
+    read -rsn1 -t 0.001 k 2>/dev/null || return 1
+    [ "$k" = $'\e' ]
+}
+
+# 后台跑一条命令，同时让 spinner 转起来。返回 130 表示用户按 esc 取消
+task_wait() { # $1=pid
+    local pid=$1
+    while kill -0 "$pid" 2>/dev/null; do
+        if ui_esc_pressed; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 130
+        fi
+        TASK_TICK=$((TASK_TICK + 1))
+        task_draw
+        sleep 0.12
+    done
+    wait "$pid"
+}
+
+task_draw() {
+    local i st sym color used=0 done_all=1
+    ui_reset
+    ui_menu_header
+    ui_lr "  $TASK_TITLE" "${TASK_SUB:+$TASK_SUB  }" \
+        "$C_BOLD  $TASK_TITLE$C_RESET" "$C_DIM${TASK_SUB:+$TASK_SUB  }$C_RESET"
+    used=1
+    for i in "${!TASK_NAMES[@]}"; do
+        st="${TASK_STATE[$i]}"
+        case "$st" in
+        ok) sym="$UI_OK" color="$C_GREEN" ;;
+        fail) sym="$UI_BAD" color="$C_RED" ;;
+        running)
+            sym="${UI_SPIN[$((TASK_TICK % 4))]}"
+            color="$C_CYAN"
+            ;;
+        *) sym=" " color="$C_DIM" ;;
+        esac
+        [ "$st" = ok ] || done_all=0
+        ui_step "$sym" "${TASK_NAMES[$i]}" "${TASK_DETAIL[$i]}" "${TASK_RIGHT[$i]}" "$color"
+        used=$((used + 1))
+    done
+    if [ "${#TASK_HINT[@]}" -gt 0 ]; then
+        ui_blank
+        used=$((used + 1))
+        local h
+        for h in "${TASK_HINT[@]}"; do
+            ui_lr "  $h" "" "$C_YELLOW  $h$C_RESET" ""
+            used=$((used + 1))
+        done
+    fi
+    ui_pad "$used"
+    ui_sep
+    if [ "${#TASK_HINT[@]}" -gt 0 ]; then
+        ui_lr "  any key to continue" "" "$C_DIM  any key to continue$C_RESET" ""
+    elif [ "$done_all" -eq 1 ]; then
+        ui_lr "  done" "" "$C_GREEN  done$C_RESET" ""
+    else
+        local sp="${UI_SPIN[$((TASK_TICK % 4))]}"
+        ui_lr "  $sp  working" "" "$C_CYAN  $sp$C_RESET  ${C_DIM}working$C_RESET" ""
+    fi
+    ui_bot
+    ui_redraw
+}
+
+# ── 带真进度的下载 ──
+#
+# curl 自己的进度条格式我们控制不了，会打断框内排版。改成：curl 丢后台静默下载，
+# 前台轮询目标文件已写入的字节数，对比 Content-Length 自己画条。
+# 顺带白拿速率与 eta —— 这两个 curl 的进度条也给不了。
+#
+# 拿不到 Content-Length 时退化为「只显示已下载量 + 速率」，不画百分比。
+
+dl_content_length() { # $1=url
+    curl -sIL --connect-timeout 5 --max-time 20 "$1" 2>/dev/null |
+        tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print n+0}'
+}
+
+# $1=目标文件 $2=完整 URL $3=步骤下标
+dl_with_progress() {
+    local dst="$1" url="$2" idx="$3"
+    local total now prev=0 t0 elapsed spd pct eta bar f
+    local w=18 # 进度条列宽。20 会让「条+百分比+速率+eta」超出框宽一列
+    total=$(dl_content_length "$url")
+    t0=$(date +%s)
+
+    curl -fL --connect-timeout 5 --retry 2 -s -o "$dst" "$url" &
+    local pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        if ui_esc_pressed; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 130
+        fi
+        now=$(stat -c %s "$dst" 2>/dev/null || echo 0)
+        elapsed=$(($(date +%s) - t0))
+        [ "$elapsed" -lt 1 ] && elapsed=1
+        spd=$(fmt_size $((now / elapsed)))
+        if [ "$total" -gt 0 ]; then
+            pct=$((now * 100 / total))
+            [ "$pct" -gt 100 ] && pct=100
+            f=$((pct * w / 100))
+            printf -v bar '%*s' "$f" ''
+            bar="${bar// /#}"
+            printf -v f '%*s' $((w - f)) ''
+            bar="$bar${f// /.}"
+            if [ "$now" -gt 0 ] && [ "$now" -lt "$total" ]; then
+                eta="eta $(fmt_dur $(((total - now) * elapsed / now)))"
+            else eta=""; fi
+            TASK_DETAIL[$idx]="$bar $(printf '%3d' $pct)%"
+            TASK_RIGHT[$idx]="$spd/s${eta:+  $eta}"
+        else
+            TASK_DETAIL[$idx]="$(fmt_size "$now")"
+            TASK_RIGHT[$idx]="$spd/s"
+        fi
+        TASK_TICK=$((TASK_TICK + 1))
+        task_draw
+        sleep 0.2
+    done
+    wait "$pid"
+}
+
+# ── 选择视图：在同一个框里做单键选择 ──
+# $1=标题 $2..=「键|标签」，返回按下的键
+ui_choose() {
+    local title="$1"
+    shift
+    local used=1 opt key
+    ui_reset
+    ui_menu_header
+    ui_lr "  $title" "" "$C_BOLD  $title$C_RESET" ""
+    ui_blank
+    used=2
+    for opt in "$@"; do
+        ui_lr "    ${opt%%|*}   ${opt#*|}" "" \
+            "    ${C_CYAN}${opt%%|*}$C_RESET   ${opt#*|}" ""
+        used=$((used + 1))
+    done
+    ui_pad "$used"
+    ui_sep
+    ui_lr "  esc  cancel" "" "$C_DIM  esc  cancel$C_RESET" ""
+    ui_bot
+    ui_redraw
+    read -rsn1 key 2>/dev/null || key=""
+    printf '%s' "$key"
+}
+
+# ── 瞬时动作：成功就地反馈（不离开菜单），失败才进任务视图停住 ──
+menu_quick() { # $1=动作函数 $2=成功文案 $3=任务名
+    local out rc first
+    out=$("$1" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        TASK_RESULT="$2"
+        return 0
+    fi
+    first=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -viE '^\[info\]|^$' | head -n 1)
+    task_begin "$3" "" "$3"
+    task_step 0
+    task_fail "failed" "$(ui_fit "${first:-something went wrong}" 52)" \
+        "" "journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
+    read -rsn1 _ 2>/dev/null || true
+    return 1
+}
+
+# ── 订阅地址：沿用现有 / 输入新的 ──
+menu_resolve_sub() {
+    local cur key url
+    cur=$(cfg_url_get 2>/dev/null) || cur=""
+    if [ -n "$cur" ]; then
+        key=$(ui_choose "subscription" "y|keep   $(ui_fit "$cur" 38)" "n|enter a new one")
+        case "$key" in
+        y) printf '%s\n' "$cur"; return 0 ;;
+        n) ;;
+        *) return 1 ;;
+        esac
+    fi
+    # 需要打字：框正常画完，输入行紧贴框底（框内做 readline 要自己管光标，不值得）
+    ui_reset
+    ui_menu_header
+    ui_lr "  subscription" "" "$C_BOLD  subscription$C_RESET" ""
+    ui_blank
+    ui_lr "  enter the subscription URL below" "" "$C_DIM  enter the subscription URL below$C_RESET" ""
+    ui_pad 3
+    ui_sep
+    ui_lr "  esc  cancel" "" "$C_DIM  esc  cancel$C_RESET" ""
+    ui_bot
+    ui_redraw
+    printf '\n  %s>%s ' "$C_CYAN" "$C_RESET"
+    printf '%s' "$UI_SHOW"
+    read -r -e -i "$cur" url 2>/dev/null || url="" # -e 开 readline，-i 预填现有地址
+    printf '%s' "$UI_HIDE"
+    cfg_url_valid "$url" || return 1
+    printf '%s\n' "$url"
+}
+
+# ── 任务：更新订阅配置 ──
+task_update_config() {
+    local sub tmp out had
+    sub=$(menu_resolve_sub) || return 0 # 取消不算失败
+    task_begin "update config" "" fetch validate save
+    tmp="$SBS_WORK_DIR/.config.$$.json"
+
+    task_step 0 "$(ui_fit "$sub" 38)"
+    (cfg_download "$sub" "$tmp") &
+    task_wait $!
+    case $? in
+    0) ;;
+    130)
+        rm -f "$tmp"
+        return 130
+        ;;
+    *)
+        task_fail "download failed" "cannot fetch the subscription - config unchanged" \
+            "check the URL and the network"
+        rm -f "$tmp"
+        return 1
+        ;;
+    esac
+    task_ok "$(fmt_size "$(stat -c %s "$tmp" 2>/dev/null || echo 0)")" ""
+
+    task_step 1
+    if ! out=$(cfg_validate "$tmp"); then
+        task_fail "invalid" "the fetched config does not pass sing-box check" \
+            "$(ui_fit "$(printf '%s' "$out" | head -n 1)" 52)" "config unchanged"
+        rm -f "$tmp"
+        return 1
+    fi
+    task_ok "$(cfg_node_count_of "$tmp") nodes" ""
+
+    task_step 2
+    had=$(cfg_commit "$tmp") || {
+        task_fail "write failed" "cannot write $SBS_CONFIG" "check permissions"
+        rm -f "$tmp"
+        return 1
+    }
+    task_ok "${had:+backup kept}" ""
+    TASK_RESULT="config updated"
+    svc_is_active && TASK_RESULT="config updated - restart to apply"
+    return 0
+}
+
+# ── 任务：更新脚本自身 ──
+task_update_self() {
+    local tmpdir stage base ok=0
+    task_begin "update sbs" "" fetch check install
+    tmpdir=$(mktemp -d) || {
+        task_step 0
+        task_fail "no temp dir" "cannot create a temp directory"
+        return 1
+    }
+    stage="$(dirname "$SBS_EXEC")/.$(basename "$SBS_EXEC").$$.tmp"
+
+    task_step 0
+    for base in $(src_script | awk '!seen[$0]++'); do
+        TASK_DETAIL[0]="$(ui_fit "${base#https://}" 40)"
+        task_draw
+        if curl -fsSL --connect-timeout 5 --retry 2 -o "$tmpdir/sbs.sh" "$base/sbs.sh"; then
+            ok=1
+            break
+        fi
+    done
+    if [ "$ok" -ne 1 ]; then
+        task_fail "all sources failed" "cannot fetch sbs.sh from any source" \
+            "" "  SBS_MIRROR=<base-url> sbs update sbs"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    task_ok "$(fmt_size "$(stat -c %s "$tmpdir/sbs.sh" 2>/dev/null || echo 0)")" ""
+
+    task_step 1
+    if ! bash -n "$tmpdir/sbs.sh" 2>/dev/null; then
+        task_fail "syntax error" "the downloaded script does not parse - keeping the old one"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    task_ok "syntax ok" ""
+
+    # 本脚本就是 $SBS_EXEC，而 bash 边读边执行、按字节偏移续读。
+    # 就地覆盖会让它从新内容的行中间接上，把两个版本串起来跑，所以必须改名顶替。
+    task_step 2
+    if ! sudo cp "$tmpdir/sbs.sh" "$stage" || ! sudo chmod 755 "$stage" || ! sudo mv -f "$stage" "$SBS_EXEC"; then
+        task_fail "install failed" "cannot replace $SBS_EXEC" "check sudo permissions"
+        sudo rm -f "$stage" 2>/dev/null
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    rm -rf "$tmpdir"
+    task_ok "$SBS_EXEC" ""
+    TASK_RESULT="sbs updated - restart it"
+    return 0
+}
+
+# ── 任务：卸载 ──
+# 确认改成框内单键（原来是 read 输入 + 回车，和菜单其余部分不一致）。
+# 用 d 而不是 y 做确认键：手滑按到 y 的概率远高于连按两次 d。
+menu_remove_flow() {
+    local key
+    key=$(ui_choose "remove everything?" \
+        "d|yes - delete kernel, config and sbs" \
+        "n|cancel")
+    [ "$key" = d ] || return 1
+
+    task_begin "remove" "" service files script
+    task_step 0
+    svc_purge
+    task_ok "unit disabled and removed" ""
+    task_step 1
+    sudo rm -rf "$SBS_WORK_DIR"
+    task_ok "$SBS_WORK_DIR" ""
+    # 删掉自己之后本进程仍能跑完 —— bash 攥着已打开的 fd，inode 还活着
+    task_step 2
+    sudo rm -f "$SBS_EXEC"
+    task_ok "$SBS_EXEC" ""
+    return 0
+}
+
+# ── 菜单里的「装/更新内核」完整流程 ──
+menu_kernel_flow() {
+    local tags stable beta key tag url tmp
+    core_detect_target >/dev/null 2>&1 || {
+        task_begin "update kernel" "" resolve
+        task_step 0
+        task_fail "unsupported arch" "unsupported architecture: $(uname -m)"
+        return 1
+    }
+
+    # 解析版本，spinner 转起来
+    task_begin "update kernel" "" resolve
+    task_step 0 "querying release tags"
+    tmp=$(mktemp) || return 1
+    (gh_resolve_tags >"$tmp" 2>/dev/null) &
+    task_wait $!
+    if [ $? -eq 130 ]; then
+        rm -f "$tmp"
+        return 130
+    fi
+    tags=$(cat "$tmp" 2>/dev/null)
+    rm -f "$tmp"
+    if [ -z "$tags" ]; then
+        task_fail "cannot resolve" "cannot fetch the version list" "github.com and jsDelivr are both unreachable"
+        return 1
+    fi
+    stable=$(printf '%s\n' "$tags" | sed -n 1p)
+    beta=$(printf '%s\n' "$tags" | sed -n 2p)
+    task_ok "stable ${stable#v}    beta ${beta#v}" ""
+
+    key=$(ui_choose "which release?" "s|stable   ${stable#v}" "b|beta     ${beta#v}")
+    case "$key" in
+    s) tag="$stable" ;;
+    b)
+        [ -n "$beta" ] || return 1
+        tag="$beta"
+        ;;
+    *) return 0 ;; # esc / 其它键 = 取消，不算失败
+    esac
+    url=$(gh_asset_url "$tag")
+    task_install_kernel "$tag" "$url"
+}
+
+# ── 任务：装/更新内核。交互路径，走任务视图 ──
+# 与 kern_install 共用同一批原语（kern_extract / kern_selfcheck / kern_replace），
+# 区别只在于「谁来汇报进度」
+task_install_kernel() { # $1=tag $2=下载地址
+    local tag="$1" url="$2" stage tarball src full ok=0 selfcheck cur
+    cur=$(kern_version_short 2>/dev/null) || cur="none"
+
+    task_begin "update kernel" "$cur -> ${tag#v}" resolve download verify install
+    task_step 0 "$SBS_TARGET_SUFFIX"
+    task_ok "$SBS_TARGET_SUFFIX" ""
+
+    stage=$(kern_stage_new) || {
+        task_step 1
+        task_fail "cannot create temp dir" "cannot create temp dir under $SBS_WORK_DIR" "check disk space and permissions"
+        return 1
+    }
+    tarball="$stage/sing-box.tar.gz"
+
+    # 逐个源试，每个源的结局都留在屏上
+    task_step 1
+    for src in $(src_kernel | awk '!seen[$0]++'); do
+        if [ "$src" = direct ]; then full="$url"; else full="$src/$url"; fi
+        TASK_DETAIL[1]="$src"
+        TASK_RIGHT[1]=""
+        task_draw
+        dl_with_progress "$tarball" "$full" 1
+        case $? in
+        0)
+            src_remember "$src"
+            ok=1
+            break
+            ;;
+        130)
+            rm -rf "$stage"
+            return 130 # 用户取消，不再试下一个源
+            ;;
+        esac
+        ui_step "$UI_BAD" download "$src" "failed" "$C_YELLOW"
+    done
+    if [ "$ok" -ne 1 ]; then
+        task_fail "all sources unreachable" \
+            "all download sources are unreachable" "check the network, or pick a mirror:" "  SBS_PROXY=https://ghfast.top sbs update"
+        rm -rf "$stage"
+        return 1
+    fi
+    task_ok "$(fmt_size "$(stat -c %s "$tarball" 2>/dev/null || echo 0)") downloaded" ""
+
+    task_step 2
+    if ! kern_extract "$stage" "$tarball"; then
+        task_fail "extract failed" "extract failed, or no sing-box binary in the archive" "likely a partial download - retry"
+        rm -rf "$stage"
+        return 1
+    fi
+    if ! selfcheck=$(kern_selfcheck "$stage"); then
+        task_fail "cannot run" "the new binary does not run - kept the old one" "$selfcheck"
+        rm -rf "$stage"
+        return 1
+    fi
+    task_ok "${selfcheck#sing-box version }" ""
+
+    task_step 3
+    if ! kern_replace "$stage"; then
+        task_fail "replace failed" "replace failed - kept the old one" "check permissions on $SBS_BIN"
+        rm -rf "$stage"
+        return 1
+    fi
+    rm -rf "$stage"
+    svc_write_unit >/dev/null 2>&1
+    task_ok "$SBS_BIN" "$(fmt_size "$(stat -c %s "$SBS_BIN" 2>/dev/null || echo 0)")"
+    TASK_RESULT="kernel -> ${tag#v}"
+    return 0
+}
+
 # ============================================================ L4 菜单
-cli_menu_draw() {
+# header 三行 + 分隔线。菜单和任务视图共用 —— 长任务进行时也能看到服务状态
+ui_menu_header() {
     local state scolor ver tun uptime ip loc age
     local l2p l2c l3p l3c
 
@@ -879,8 +1496,6 @@ cli_menu_draw() {
     tun=$(tun_info 2>/dev/null | awk '{print $1" "$2}') || tun=""
     uptime=$(svc_uptime_str)
 
-    printf '\e[H\e[2J'
-    echo
     ui_top
     ui_lr "  sing-box" "$state  " "$C_BOLD  sing-box$C_RESET" "$scolor$state$C_RESET  "
 
@@ -899,6 +1514,11 @@ cli_menu_draw() {
     fi
 
     ui_sep
+}
+
+cli_menu_draw() {
+    ui_reset
+    ui_menu_header
     ui_blank
     # k 一个键两种含义：没装内核时是 install（内核+unit+订阅一条龙），
     # 装了之后才是 update kernel。全新机器上敲 sbs 必须有路可走。
@@ -922,12 +1542,19 @@ cli_menu_draw() {
         ui_item r restart "u" "update sbs" "$C_DIM" ""
         ui_item i status "d" remove "" ""
     fi
-    ui_blank
+    ui_pad 5
     ui_sep
-    ui_lr "  q  quit" "f  refresh  " \
-        "  ${C_CYAN}q$C_RESET  quit" "${C_CYAN}f$C_RESET  refresh  "
+    local rp rc
+    if [ -n "${TASK_RESULT:-}" ]; then
+        rp="$TASK_RESULT  f  refresh  "
+        rc="$C_GREEN$TASK_RESULT$C_RESET  ${C_CYAN}f$C_RESET  refresh  "
+    else
+        rp="f  refresh  "
+        rc="${C_CYAN}f$C_RESET  refresh  "
+    fi
+    ui_lr "  q  quit" "$rp" "  ${C_CYAN}q$C_RESET  quit" "$rc"
     ui_bot
-    echo
+    ui_redraw
 }
 
 cli_menu_pause() {
@@ -947,38 +1574,67 @@ cli_menu() {
     fi
 
     local key
+    # 无论怎么退出（正常 / Ctrl-C / 报错）都要把光标恢复出来
+    ui_session_begin
     while true; do
         cli_menu_draw
         read -rsn1 key 2>/dev/null || return 0
         echo
         case "$key" in
-        s) cmd_start; cli_menu_pause ;;
-        x) cmd_stop; cli_menu_pause ;;
-        r) cmd_restart; cli_menu_pause ;;
-        i) cmd_status; cli_menu_pause ;;
-        k)
-            # 与上面的标签保持一致：没装就走完整安装，装了就只更新内核
-            if [ -x "$SBS_BIN" ]; then cmd_update_kernel; else cmd_install; fi
-            cli_menu_pause
+        s) TASK_RESULT=""; menu_quick cmd_start "started" "start" ;;
+        x) TASK_RESULT=""; menu_quick cmd_stop "stopped" "stop" ;;
+        r) TASK_RESULT=""; menu_quick cmd_restart "restarted" "restart" ;;
+        i)
+            # status 是面板不是流程，画完停住等按键
+            TASK_RESULT=""
+            cmd_status
+            read -rsn1 _ 2>/dev/null || true
             ;;
-        c) cmd_update_config; cli_menu_pause ;;
+        k)
+            TASK_RESULT=""
+            if [ -x "$SBS_BIN" ]; then
+                menu_kernel_flow
+                case $? in 0 | 130) ;; *) read -rsn1 _ 2>/dev/null || true ;; esac
+            else
+                # 全新机器：装内核，紧接着要订阅
+                if menu_kernel_flow; then
+                    task_update_config || read -rsn1 _ 2>/dev/null || true
+                else
+                    read -rsn1 _ 2>/dev/null || true
+                fi
+            fi
+            ;;
+        c)
+            TASK_RESULT=""
+            task_update_config
+            # 130 = 用户按 esc 取消，直接回菜单，不算失败
+            case $? in 0 | 130) ;; *) read -rsn1 _ 2>/dev/null || true ;; esac
+            ;;
         u)
-            if cmd_update_self; then
-                core_info "脚本已更新，退出以加载新版本"
+            TASK_RESULT=""
+            if task_update_self; then
+                ui_session_end
+                core_info "sbs 已更新，重新运行以加载新版本"
                 return 0
             fi
-            cli_menu_pause
+            read -rsn1 _ 2>/dev/null || true
             ;;
         d)
-            # cmd_remove 取消或失败都返回 1，此时留在菜单
-            if cmd_remove; then return 0; fi
-            cli_menu_pause
+            TASK_RESULT=""
+            if menu_remove_flow; then
+                ui_session_end
+                return 0
+            fi
+            read -rsn1 _ 2>/dev/null || true
             ;;
         f)
-            # 唯一显式发网络请求的键。启停不再自动刷新，想要准确值就按它
-            net_exit_refresh || core_warn "取不到出口 IP"
+            TASK_RESULT=""
+            net_exit_refresh || TASK_RESULT="exit ip unavailable"
             ;;
-        q | $'\e') printf '\e[H\e[2J'; return 0 ;;
+        q | $'\e')
+            ui_session_end
+            return 0
+            ;;
         *) : ;;
         esac
     done
@@ -1041,6 +1697,7 @@ cli_dispatch() {
 
 # ============================================================ 入口
 main() {
+    ui_init_charset
     core_check_deps || exit 1
     core_ensure_workdir || die "无法创建 $SBS_WORK_DIR"
     cli_dispatch "$@"
