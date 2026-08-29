@@ -868,29 +868,12 @@ cmd_restart() {
 
 # 同样不检查配置：状态该如实显示，不该因为配置无效就拒绝回答。
 # 面板宽度不够时退回 systemctl 原始输出。
-cmd_status() {
-    local cols
-    cols=$(tput cols 2>/dev/null || echo 80)
-    if [ "$cols" -lt "$UI_W" ]; then
-        svc_status
-        return 0
-    fi
+# 详情 body，固定 5 行。只放 header 没有的东西 ——
+# 状态 / 版本 / tun / 出口 / 运行时长都在 header 里，不再重复一遍。
+# valid 那项要跑一次 sing-box check（几十毫秒），所以只在详情模式下算。
+ui_details_body() {
+    local pid mem cpu nrs bin bsize nodes mtime valid vcolor src
 
-    net_exit_refresh || true
-
-    # ---- service ----
-    local state scolor up pid mem cpu nrs
-    if svc_is_active; then
-        state=running
-        scolor="$C_GREEN"
-    elif systemctl is-failed --quiet "$SBS_UNIT_NAME" 2>/dev/null; then
-        state=failed
-        scolor="$C_RED"
-    else
-        state=stopped
-        scolor="$C_DIM"
-    fi
-    up=$(svc_uptime_str)
     pid=$(svc_prop MainPID)
     [ "${pid:-0}" = 0 ] && pid="-"
     mem=$(svc_prop MemoryCurrent)
@@ -900,9 +883,6 @@ cmd_status() {
     nrs=$(svc_prop NRestarts)
     [ -n "${nrs:-}" ] || nrs=0
 
-    # ---- kernel ----
-    local ver bin bsize
-    ver=$(kern_version_short 2>/dev/null) || ver="not installed"
     if [ -f "$SBS_BIN" ]; then
         bsize=$(fmt_size "$(stat -c %s "$SBS_BIN" 2>/dev/null || echo 0)")
         bin="${SBS_BIN/#$HOME/\~}"
@@ -911,17 +891,10 @@ cmd_status() {
         bin="-"
     fi
 
-    # ---- network ----
-    local tun ip loc age org
-    tun=$(tun_info 2>/dev/null) || tun="-"
-    { read -r ip; read -r loc; read -r age; read -r org; } < <(net_exit_cached) 2>/dev/null || true
-
-    # ---- config ----
-    local src nodes mtime valid vcolor
-    src=$(cfg_url_get 2>/dev/null) || src="-"
     if [ -f "$SBS_CONFIG" ]; then
         nodes=$(cfg_node_count) || nodes="?"
-        mtime=$(stat -c %Y "$SBS_CONFIG" 2>/dev/null) && mtime="$(fmt_dur $(($(date +%s) - mtime))) ago" || mtime="-"
+        mtime=$(stat -c %Y "$SBS_CONFIG" 2>/dev/null) &&
+            mtime="updated $(fmt_dur $(($(date +%s) - mtime))) ago" || mtime=""
         if [ -x "$SBS_BIN" ] && [ -z "$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)" ]; then
             valid=valid
             vcolor="$C_GREEN"
@@ -931,31 +904,33 @@ cmd_status() {
         fi
     else
         nodes="-"
-        mtime="-"
+        mtime=""
         valid="missing"
         vcolor="$C_YELLOW"
     fi
+    src=$(cfg_url_get 2>/dev/null) || src="-"
 
-    # ---- 画 ----
-    ui_reset
-    ui_sec service "$UI_TL" "$UI_TR"
-    ui_kv status "$state" "${up:+$up }" "$scolor$state$C_RESET" "$C_DIM${up:+$up }$C_RESET"
-    ui_kv pid "$(printf '%-12s mem %-9s cpu %s' "$pid" "$mem" "$cpu")" ""
+    ui_kv pid "$(printf '%-12s mem %-10s cpu %s' "$pid" "$mem" "$cpu")" ""
     ui_kv restarts "$nrs" ""
-    ui_sec kernel
-    ui_kv version "$ver" ""
     ui_kv binary "$(ui_fit "$bin" 32)" "${bsize:+$bsize }" "" "$C_DIM${bsize:+$bsize }$C_RESET"
-    ui_sec network
-    ui_kv tun "$tun" ""
-    if [ -n "${ip:-}" ]; then
-        ui_kv exit "$ip  $loc" "${age:+$age }" "" "$C_DIM${age:+$age }$C_RESET"
-        [ -n "${org:-}" ] && ui_kv "" "$(ui_fit "$org" 42)" "" "$C_DIM$(ui_fit "$org" 42)$C_RESET"
-    else
-        ui_kv exit "n/a" ""
-    fi
-    ui_sec config
+    ui_kv config "$(printf '%-12s %s' "$nodes nodes" "$mtime")" "$valid " "" "$vcolor$valid$C_RESET "
     ui_kv source "$(ui_fit "$src" 42)" ""
-    ui_kv nodes "$(printf '%-10s updated %s' "$nodes" "$mtime")" "$valid " "" "$vcolor$valid$C_RESET "
+}
+readonly UI_DETAILS_ROWS=5
+
+# 命令行下的 sbs status：header + 详情 body。与菜单里按 i 是同一套渲染
+cmd_status() {
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+    if [ "$cols" -lt "$UI_W" ]; then
+        svc_status
+        return 0
+    fi
+    ui_reset
+    ui_menu_header
+    ui_blank
+    ui_details_body
+    ui_pad $((UI_DETAILS_ROWS + 1))
     ui_bot
     ui_out
     return 0
@@ -1518,10 +1493,18 @@ ui_menu_header() {
     ui_sep
 }
 
+MENU_VIEW=actions # actions | details
+
 cli_menu_draw() {
     ui_reset
     ui_menu_header
     ui_blank
+    if [ "$MENU_VIEW" = details ]; then
+        ui_details_body
+        ui_pad $((UI_DETAILS_ROWS + 1))
+        cli_menu_footer
+        return 0
+    fi
     # k 一个键两种含义：没装内核时是 install（内核+unit+订阅一条龙），
     # 装了之后才是 update kernel。全新机器上敲 sbs 必须有路可走。
     local klabel
@@ -1532,27 +1515,33 @@ cli_menu_draw() {
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "$C_DIM" "$C_DIM"
         ui_item r restart "u" "update sbs" "$C_DIM" ""
-        ui_item i status "d" remove "$C_DIM" "$C_DIM"
+        ui_item i details "d" remove "$C_DIM" "$C_DIM"
     elif svc_is_active; then
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "" ""
         ui_item r restart "u" "update sbs" "" ""
-        ui_item i status "d" remove "" ""
+        ui_item i details "d" remove "" ""
     else
         ui_item s start "k" "$klabel" "" ""
         ui_item x stop "c" "update config" "$C_DIM" ""
         ui_item r restart "u" "update sbs" "$C_DIM" ""
-        ui_item i status "d" remove "" ""
+        ui_item i details "d" remove "" ""
     fi
     ui_pad 5
+    cli_menu_footer
+}
+
+# 底部提示行。details 模式下多一个「切回动作列表」的提示
+cli_menu_footer() {
     ui_sep
-    local rp rc
+    local rp rc back=""
+    [ "$MENU_VIEW" = details ] && back="i  actions   "
     if [ -n "${TASK_RESULT:-}" ]; then
-        rp="$TASK_RESULT  f  refresh  "
-        rc="$C_GREEN$TASK_RESULT$C_RESET  ${C_CYAN}f$C_RESET  refresh  "
+        rp="$TASK_RESULT  ${back}f  refresh  "
+        rc="$C_GREEN$TASK_RESULT$C_RESET  ${back:+${C_CYAN}i$C_RESET  actions   }${C_CYAN}f$C_RESET  refresh  "
     else
-        rp="f  refresh  "
-        rc="${C_CYAN}f$C_RESET  refresh  "
+        rp="${back}f  refresh  "
+        rc="${back:+${C_CYAN}i$C_RESET  actions   }${C_CYAN}f$C_RESET  refresh  "
     fi
     ui_lr "  q  quit" "$rp" "  ${C_CYAN}q$C_RESET  quit" "$rc"
     ui_bot
@@ -1586,10 +1575,8 @@ cli_menu() {
         x) TASK_RESULT=""; menu_quick cmd_stop "stopped" "stop" ;;
         r) TASK_RESULT=""; menu_quick cmd_restart "restarted" "restart" ;;
         i)
-            # status 是面板不是流程，画完停住等按键
-            TASK_RESULT=""
-            cmd_status
-            read -rsn1 _ 2>/dev/null || true
+            # 不是进入另一个视图，只是把 body 换掉 —— 动作键照常可用
+            if [ "$MENU_VIEW" = details ]; then MENU_VIEW=actions; else MENU_VIEW=details; fi
             ;;
         k)
             TASK_RESULT=""
