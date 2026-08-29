@@ -93,10 +93,10 @@ ui_init_charset() {
 
     if [ "$ascii" -eq 1 ]; then
         UI_H='-' UI_V='|' UI_TL='+' UI_TR='+' UI_BL='+' UI_BR='+' UI_ML='+' UI_MR='+'
-        UI_OK='+' UI_BAD='x'
+        UI_OK='+' UI_BAD='x' UI_DOT='*'
     else
         UI_H='─' UI_V='│' UI_TL='╭' UI_TR='╮' UI_BL='╰' UI_BR='╯' UI_ML='├' UI_MR='┤'
-        UI_OK='✓' UI_BAD='✗'
+        UI_OK='✓' UI_BAD='✗' UI_DOT='●'
     fi
     UI_SPIN=('|' '/' '-' $'\\')
 }
@@ -667,7 +667,7 @@ svc_prop() { systemctl show "$SBS_UNIT_NAME" -p "$1" --value 2>/dev/null; }
 svc_uptime_str() {
     local t
     t=$(svc_uptime_sec 2>/dev/null) || return 0
-    printf 'up %s\n' "$(fmt_dur "$t")"
+    fmt_dur "$t"
 }
 svc_purge() {
     sudo systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
@@ -1409,10 +1409,13 @@ ui_menu_header() {
     local l2p l2c l3p l3c
 
     if svc_is_active; then
-        state="RUNNING"
+        state="Running"
         scolor="$C_GREEN"
+    elif systemctl is-failed --quiet "$SBS_UNIT_NAME" 2>/dev/null; then
+        state="Failed"
+        scolor="$C_RED"
     else
-        state="STOPPED"
+        state="Stopped"
         scolor="$C_DIM"
     fi
 
@@ -1424,7 +1427,8 @@ ui_menu_header() {
     ui_top
     local title
     if [ -f "$SBS_BIN" ]; then title="${SBS_BIN/#$HOME/\~}"; else title="sing-box"; fi
-    ui_lr "  $title" "$state  " "$C_BOLD  $title$C_RESET" "$scolor$state$C_RESET  "
+    ui_lr "  $title" "$UI_DOT $state${uptime:+  $uptime}  " \
+        "$C_BOLD  $title$C_RESET" "$scolor$UI_DOT $state$C_RESET$C_DIM${uptime:+  $uptime}$C_RESET  "
 
     # 配置是否合法挂在第 2 行右角常驻。这是 header 里唯一需要跑一次
     # sing-box check 的字段（306 节点约几十毫秒），值得 —— 光看 RUNNING
@@ -1440,15 +1444,14 @@ ui_menu_header() {
         valid=invalid
         vcolor="$C_RED"
     fi
-    printf -v l2p '  %s   %s   %s' "$ver" "${tun:-no tun}" "$uptime"
-    # 右角要放 valid，左半边超长时先截断，否则挤成 "up 2h 24mvalid"
-    l2p=$(ui_fit "$l2p" $((UI_IN - ${#valid} - 3)))
+    printf -v l2p '  %s   %s' "$ver" "${tun:-no tun}"
+    l2p=$(ui_fit "$l2p" $((UI_IN - ${#valid} - 10)))
     l2c="$C_DIM$l2p$C_RESET"
-    ui_lr "$l2p" "$valid  " "$l2c" "$vcolor$valid$C_RESET  "
+    ui_lr "$l2p" "config $valid  " "$l2c" "${C_DIM}config$C_RESET $vcolor$valid$C_RESET  "
 
     if { read -r ip; read -r loc; read -r age; } < <(net_exit_cached) 2>/dev/null && [ -n "${ip:-}" ]; then
-        printf -v l3p '  exit  %s  %s' "$ip" "$loc"
-        printf -v l3c '%s  exit  %s  %s%s' "$C_DIM" "$ip" "$loc" "$C_RESET"
+        printf -v l3p '  %s  %s' "$ip" "$loc"
+        printf -v l3c '%s  %s  %s%s' "$C_DIM" "$ip" "$loc" "$C_RESET"
         local agec="$C_DIM$age$C_RESET"
         [ "$age" = stale ] && agec="$C_YELLOW$age$C_RESET"
         if [ "$UI_REFRESHING" -eq 1 ]; then
@@ -1457,7 +1460,7 @@ ui_menu_header() {
         fi
         ui_lr "$l3p" "$age  " "$l3c" "$agec  "
     else
-        ui_lr "  exit  n/a" "" "$C_DIM  exit  n/a$C_RESET" ""
+        ui_lr "  no exit ip yet" "" "$C_DIM  no exit ip yet$C_RESET" ""
     fi
 
     # 第 4 行只在出问题时出现。restarts 常态为 0，常驻显示纯粹是噪音
