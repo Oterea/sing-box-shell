@@ -198,8 +198,10 @@ UI_IN_MENU=0
 ui_out() {
     if [ "$UI_IN_MENU" -eq 1 ]; then ui_redraw; else printf '%s\n' "${UI_BUF%$'\n'}"; fi
 }
-# 动画重绘：光标归位 + 同步输出，不清屏（清屏会闪）
-ui_redraw() { printf '%s%s%s%s' "$UI_SYNC_ON" "$UI_HOME" "${UI_BUF%$'\n'}" "$UI_SYNC_OFF"; }
+# 动画重绘：光标归位 + 同步输出，不清屏（清屏会闪）。
+# 走 stderr —— 这是「画屏幕」不是「输出数据」。若走 stdout，
+# key=$(ui_choose ...) 这类命令替换会把整个界面吞进变量，屏幕上什么都不显示。
+ui_redraw() { printf '%s%s%s%s' "$UI_SYNC_ON" "$UI_HOME" "${UI_BUF%$'\n'}" "$UI_SYNC_OFF" >&2; }
 
 # ============================================================ L0 环境
 core_check_deps() {
@@ -750,12 +752,12 @@ _resolve_sub_url() {
 # 进入 / 退出全屏界面会话。命令行直接调 install 时也要用
 ui_session_begin() {
     UI_IN_MENU=1
-    printf '%s%s' "$UI_CLS" "$UI_HIDE"
+    printf '%s%s' "$UI_CLS" "$UI_HIDE" >&2
     trap 'UI_IN_MENU=0; printf "%s" "$UI_SHOW"' EXIT INT TERM
 }
 ui_session_end() {
     UI_IN_MENU=0
-    printf '%s%s' "$UI_SHOW" "$UI_CLS"
+    printf '%s%s' "$UI_SHOW" "$UI_CLS" >&2
     trap - EXIT INT TERM
 }
 
@@ -1232,10 +1234,10 @@ menu_resolve_sub() {
     ui_lr "  esc  cancel" "" "$C_DIM  esc  cancel$C_RESET" ""
     ui_bot
     ui_redraw
-    printf '\n  %s>%s ' "$C_CYAN" "$C_RESET"
-    printf '%s' "$UI_SHOW"
+    printf '\n  %s>%s ' "$C_CYAN" "$C_RESET" >&2
+    printf '%s' "$UI_SHOW" >&2
     read -r -e -i "$cur" url 2>/dev/null || url="" # -e 开 readline，-i 预填现有地址
-    printf '%s' "$UI_HIDE"
+    printf '%s' "$UI_HIDE" >&2
     cfg_url_valid "$url" || return 1
     printf '%s\n' "$url"
 }
@@ -1579,7 +1581,6 @@ cli_menu() {
     while true; do
         cli_menu_draw
         read -rsn1 key 2>/dev/null || return 0
-        echo
         case "$key" in
         s) TASK_RESULT=""; menu_quick cmd_start "started" "start" ;;
         x) TASK_RESULT=""; menu_quick cmd_stop "stopped" "stop" ;;
@@ -1621,11 +1622,11 @@ cli_menu() {
             ;;
         d)
             TASK_RESULT=""
+            # 只有确认删除才离开菜单；取消直接回菜单，不再等按键
             if menu_remove_flow; then
                 ui_session_end
                 return 0
             fi
-            read -rsn1 _ 2>/dev/null || true
             ;;
         f)
             TASK_RESULT=""
