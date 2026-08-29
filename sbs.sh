@@ -300,6 +300,14 @@ kern_install() { # $1=下载地址
     core_info "sing-box installed to $SBS_BIN"
 }
 
+# 只取版本号，去掉 "sing-box version " 前缀。菜单与 status 面板共用
+kern_version_short() {
+    local v
+    v=$(kern_version) || return 1
+    v=$(printf '%s' "$v" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*') || return 1
+    printf '%s\n' "${v%%$'\n'*}"
+}
+
 # ============================================================ L1 现场信息
 # tun 设备名与地址，没有则返回 1
 tun_info() {
@@ -327,25 +335,38 @@ net_exit_refresh() {
     [ -n "$ip" ] || return 1
     city=$(printf '%s' "$j" | jq -r '.city // empty' 2>/dev/null)
     country=$(printf '%s' "$j" | jq -r '.country // empty' 2>/dev/null)
-    local state; svc_is_active && state=active || state=inactive
-    printf '%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" >"$SBS_IPCACHE"
+    local org
+    org=$(printf '%s' "$j" | jq -r '.org // empty' 2>/dev/null)
+    local state
+    svc_is_active && state=active || state=inactive
+    # org 追加在末尾，这样旧的四字段缓存仍能正确解析（org 为空）
+    printf '%s|%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" "$org" >"$SBS_IPCACHE"
 }
 
 # 输出三段：IP、地点、年龄描述
 net_exit_cached() {
     [ -f "$SBS_IPCACHE" ] || return 1
-    local ip loc ts st cur age
-    IFS='|' read -r ip loc ts st <"$SBS_IPCACHE" || return 1
+    local ip loc ts st org cur age
+    IFS='|' read -r ip loc ts st org <"$SBS_IPCACHE" || return 1
     [ -n "$ip" ] || return 1
     svc_is_active && cur=active || cur=inactive
     # 缓存记录的服务状态与当前不符 -> 这条出口信息已经不作数，标成 stale。
     # 这是比「停止时刷新」更硬的一道保险：刷新可能因为断网失败，而状态比对不会。
     if [ -n "${st:-}" ] && [ "$st" != "$cur" ]; then
-        printf '%s\n%s\nstale\n' "$ip" "$loc"
+        printf '%s\n%s\nstale\n%s\n' "$ip" "$loc" "${org:-}"
         return 0
     fi
     age=$(($(date +%s) - ${ts:-0}))
-    printf '%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago"
+    printf '%s\n%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago" "${org:-}"
+}
+
+# 字节数转人类可读
+fmt_size() {
+    local b=$1
+    if [ "$b" -ge 1073741824 ]; then awk -v b="$b" 'BEGIN{printf "%.1fG", b/1073741824}'
+    elif [ "$b" -ge 1048576 ]; then awk -v b="$b" 'BEGIN{printf "%.1fM", b/1048576}'
+    elif [ "$b" -ge 1024 ]; then awk -v b="$b" 'BEGIN{printf "%.1fK", b/1024}'
+    else printf '%dB' "$b"; fi
 }
 
 # ============================================================ L2 配置
@@ -648,13 +669,96 @@ cmd_restart() {
     fi
 }
 
-# 同样不检查配置：状态该如实显示，不该因为配置无效就拒绝回答
+# 同样不检查配置：状态该如实显示，不该因为配置无效就拒绝回答。
+# 面板宽度不够时退回 systemctl 原始输出。
 cmd_status() {
-    svc_status
-    net_exit_refresh || core_warn "取不到出口 IP"
-    local ip loc age
-    { read -r ip; read -r loc; read -r age; } < <(net_exit_cached) 2>/dev/null
-    [ -n "${ip:-}" ] && core_info "出口 IP: $ip ${loc:+($loc)}"
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+    if [ "$cols" -lt "$UI_W" ]; then
+        svc_status
+        return 0
+    fi
+
+    net_exit_refresh || true
+
+    # ---- service ----
+    local state scolor up pid mem cpu nrs
+    if svc_is_active; then
+        state=running
+        scolor="$C_GREEN"
+    elif systemctl is-failed --quiet "$SBS_UNIT_NAME" 2>/dev/null; then
+        state=failed
+        scolor="$C_RED"
+    else
+        state=stopped
+        scolor="$C_DIM"
+    fi
+    up=$(svc_uptime_sec 2>/dev/null) && up="up $(fmt_dur "$up")" || up=""
+    pid=$(systemctl show "$SBS_UNIT_NAME" -p MainPID --value 2>/dev/null)
+    [ "${pid:-0}" = 0 ] && pid="-"
+    mem=$(systemctl show "$SBS_UNIT_NAME" -p MemoryCurrent --value 2>/dev/null)
+    case "$mem" in '' | '[not set]' | 18446744073709551615) mem="-" ;; *) mem=$(fmt_size "$mem") ;; esac
+    cpu=$(systemctl show "$SBS_UNIT_NAME" -p CPUUsageNSec --value 2>/dev/null)
+    case "$cpu" in '' | '[not set]') cpu="-" ;; *) cpu=$(awk -v n="$cpu" 'BEGIN{printf "%.1fs", n/1e9}') ;; esac
+    nrs=$(systemctl show "$SBS_UNIT_NAME" -p NRestarts --value 2>/dev/null)
+    [ -n "${nrs:-}" ] || nrs=0
+
+    # ---- kernel ----
+    local ver bin bsize
+    ver=$(kern_version_short 2>/dev/null) || ver="not installed"
+    if [ -f "$SBS_BIN" ]; then
+        bsize=$(fmt_size "$(stat -c %s "$SBS_BIN" 2>/dev/null || echo 0)")
+        bin="${SBS_BIN/#$HOME/\~}"
+    else
+        bsize=""
+        bin="-"
+    fi
+
+    # ---- network ----
+    local tun ip loc age org
+    tun=$(tun_info 2>/dev/null) || tun="-"
+    { read -r ip; read -r loc; read -r age; read -r org; } < <(net_exit_cached) 2>/dev/null || true
+
+    # ---- config ----
+    local src nodes mtime valid vcolor
+    src=$(cfg_url_get 2>/dev/null) || src="-"
+    if [ -f "$SBS_CONFIG" ]; then
+        nodes=$(jq '[.outbounds[]? | select(.type != "direct" and .type != "block" and .type != "selector" and .type != "urltest")] | length' "$SBS_CONFIG" 2>/dev/null) || nodes="?"
+        mtime=$(stat -c %Y "$SBS_CONFIG" 2>/dev/null) && mtime="$(fmt_dur $(($(date +%s) - mtime))) ago" || mtime="-"
+        if [ -x "$SBS_BIN" ] && [ -z "$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)" ]; then
+            valid=valid
+            vcolor="$C_GREEN"
+        else
+            valid=invalid
+            vcolor="$C_RED"
+        fi
+    else
+        nodes="-"
+        mtime="-"
+        valid="missing"
+        vcolor="$C_YELLOW"
+    fi
+
+    # ---- 画 ----
+    ui_sec service '╭' '╮'
+    ui_kv status "$state" "${up:+$up }" "$scolor$state$C_RESET" "$C_DIM${up:+$up }$C_RESET"
+    ui_kv pid "$(printf '%-12s mem %-9s cpu %s' "$pid" "$mem" "$cpu")" ""
+    ui_kv restarts "$nrs" ""
+    ui_sec kernel
+    ui_kv version "$ver" ""
+    ui_kv binary "$(ui_fit "$bin" 32)" "${bsize:+$bsize }" "" "$C_DIM${bsize:+$bsize }$C_RESET"
+    ui_sec network
+    ui_kv tun "$tun" ""
+    if [ -n "${ip:-}" ]; then
+        ui_kv exit "$ip  $loc" "${age:+$age }" "" "$C_DIM${age:+$age }$C_RESET"
+        [ -n "${org:-}" ] && ui_kv "" "$(ui_fit "$org" 42)" "" "$C_DIM$(ui_fit "$org" 42)$C_RESET"
+    else
+        ui_kv exit "n/a" ""
+    fi
+    ui_sec config
+    ui_kv source "$(ui_fit "$src" 42)" ""
+    ui_kv nodes "$(printf '%-10s updated %s' "$nodes" "$mtime")" "$valid " "" "$vcolor$valid$C_RESET "
+    printf '╰%s╯\n' "$(ui_bar $UI_IN)"
     return 0
 }
 
@@ -701,6 +805,31 @@ ui_lr() {
     printf '│%s%*s%s│\n' "$3" "$pad" '' "$4"
 }
 
+# 分区标题嵌在边线上：├─ service ────────┤
+ui_sec() { # $1=标题 $2=左角(默认├) $3=右角(默认┤)
+    local t="$1"
+    local lc="${2:-├}"
+    local rc="${3:-┤}"
+    local n=$((UI_IN - ${#t} - 3))
+    [ "$n" -lt 0 ] && n=0
+    printf '%s─ %s%s%s %s%s\n' "$lc" "$C_DIM" "$t" "$C_RESET" "$(ui_bar $n)" "$rc"
+}
+
+# 键值行。键固定 10 列并置灰，值正常色，$3 为右对齐的附加信息
+ui_kv() { # $1=键 $2=值(纯) $3=右(纯) $4=值(带色,省略则同纯) $5=右(带色,省略则同纯)
+    local plain colored
+    printf -v plain '  %-10s%s' "$1" "$2"
+    printf -v colored '  %s%-10s%s%s' "$C_DIM" "$1" "$C_RESET" "${4:-$2}"
+    ui_lr "$plain" "$3" "$colored" "${5:-$3}"
+}
+
+# 值太长时截断，保证不撑破框
+ui_fit() { # $1=文本 $2=可用列数
+    local t="$1"
+    local n="$2"
+    if [ "${#t}" -le "$n" ]; then printf '%s' "$t"; else printf '%s...' "${t:0:$((n - 3))}"; fi
+}
+
 # 一行两个条目。$5/$6 为 dim 时该项置灰（表示当前不可用）
 ui_item() {
     local k1=$1 l1=$2 k2=$3 l2=$4 d1=${5:-} d2=${6:-} plain colored
@@ -724,12 +853,7 @@ cli_menu_draw() {
         scolor="$C_DIM"
     fi
 
-    if ver=$(kern_version 2>/dev/null); then
-        ver=$(printf '%s' "$ver" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*') || ver=""
-        ver=${ver%%$'\n'*}
-    else
-        ver=""
-    fi
+    ver=$(kern_version_short 2>/dev/null) || ver=""
     [ -n "$ver" ] || ver="not installed"
     tun=$(tun_info 2>/dev/null | awk '{print $1" "$2}') || tun=""
     uptime=$(svc_uptime_sec 2>/dev/null) && uptime="up $(fmt_dur "$uptime")" || uptime=""
@@ -755,16 +879,28 @@ cli_menu_draw() {
 
     ui_sep
     ui_blank
-    if svc_is_active; then
-        ui_item s start "k" "update kernel" "$C_DIM" ""
+    # k 一个键两种含义：没装内核时是 install（内核+unit+订阅一条龙），
+    # 装了之后才是 update kernel。全新机器上敲 sbs 必须有路可走。
+    local klabel
+    if [ -x "$SBS_BIN" ]; then klabel="update kernel"; else klabel="install"; fi
+
+    if [ ! -x "$SBS_BIN" ]; then
+        # 内核都没有，启动 / 停止 / 重启 / 状态全都没意义，一律置灰
+        ui_item s start "k" "$klabel" "$C_DIM" ""
+        ui_item x stop "c" "update config" "$C_DIM" "$C_DIM"
+        ui_item r restart "u" "update sbs" "$C_DIM" ""
+        ui_item i status "d" remove "$C_DIM" "$C_DIM"
+    elif svc_is_active; then
+        ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "" ""
         ui_item r restart "u" "update sbs" "" ""
+        ui_item i status "d" remove "" ""
     else
-        ui_item s start "k" "update kernel" "" ""
+        ui_item s start "k" "$klabel" "" ""
         ui_item x stop "c" "update config" "$C_DIM" ""
         ui_item r restart "u" "update sbs" "$C_DIM" ""
+        ui_item i status "d" remove "" ""
     fi
-    ui_item i status "d" remove "" ""
     ui_blank
     ui_sep
     ui_lr "  q  quit" "" "  ${C_CYAN}q$C_RESET  quit" ""
@@ -798,7 +934,11 @@ cli_menu() {
         x) cmd_stop; cli_menu_pause ;;
         r) cmd_restart; cli_menu_pause ;;
         i) cmd_status; cli_menu_pause ;;
-        k) cmd_update_kernel; cli_menu_pause ;;
+        k)
+            # 与上面的标签保持一致：没装就走完整安装，装了就只更新内核
+            if [ -x "$SBS_BIN" ]; then cmd_update_kernel; else cmd_install; fi
+            cli_menu_pause
+            ;;
         c) cmd_update_config; cli_menu_pause ;;
         u)
             if cmd_update_self; then
