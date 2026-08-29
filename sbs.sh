@@ -230,9 +230,14 @@ gh_resolve_tags() {
 }
 
 # ============================================================ L2 内核
+# 不用 `... | head -1`：开了 pipefail 时，head 提前关闭管道会给前面的进程
+# 送 SIGPIPE，整条管道的状态变成 141，调用方会误判成「二进制跑不起来」。
+# 输出很小时通常不触发，但那是靠管道缓冲区侥幸，不是保证。
 kern_version() {
     [ -x "$SBS_BIN" ] || return 1
-    "$SBS_BIN" version 2>/dev/null | head -n 1
+    local out
+    out=$("$SBS_BIN" version 2>/dev/null) || return 1
+    printf '%s\n' "${out%%$'\n'*}"
 }
 
 # 下载、解压、自检、顶替。全程在 $SBS_WORK_DIR 下的临时目录里进行。
@@ -278,11 +283,12 @@ kern_install() { # $1=下载地址
     }
     chmod +x "$stage/sing-box"
 
-    selfcheck=$("$stage/sing-box" version 2>&1 | head -n 1) || {
-        core_error "新二进制无法运行，保留原有版本。输出：$selfcheck"
+    selfcheck=$("$stage/sing-box" version 2>&1) || {
+        core_error "新二进制无法运行，保留原有版本。输出：${selfcheck%%$'\n'*}"
         rm -rf "$stage"
         return 1
     }
+    selfcheck=${selfcheck%%$'\n'*}
     core_info "self-check ok: $selfcheck"
 
     mv -f "$stage/sing-box" "$SBS_BIN" || {
@@ -321,15 +327,23 @@ net_exit_refresh() {
     [ -n "$ip" ] || return 1
     city=$(printf '%s' "$j" | jq -r '.city // empty' 2>/dev/null)
     country=$(printf '%s' "$j" | jq -r '.country // empty' 2>/dev/null)
-    printf '%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" >"$SBS_IPCACHE"
+    local state; svc_is_active && state=active || state=inactive
+    printf '%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" >"$SBS_IPCACHE"
 }
 
 # 输出三段：IP、地点、年龄描述
 net_exit_cached() {
     [ -f "$SBS_IPCACHE" ] || return 1
-    local ip loc ts age
-    IFS='|' read -r ip loc ts <"$SBS_IPCACHE" || return 1
+    local ip loc ts st cur age
+    IFS='|' read -r ip loc ts st <"$SBS_IPCACHE" || return 1
     [ -n "$ip" ] || return 1
+    svc_is_active && cur=active || cur=inactive
+    # 缓存记录的服务状态与当前不符 -> 这条出口信息已经不作数，标成 stale。
+    # 这是比「停止时刷新」更硬的一道保险：刷新可能因为断网失败，而状态比对不会。
+    if [ -n "${st:-}" ] && [ "$st" != "$cur" ]; then
+        printf '%s\n%s\nstale\n' "$ip" "$loc"
+        return 0
+    fi
     age=$(($(date +%s) - ${ts:-0}))
     printf '%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago"
 }
@@ -599,26 +613,39 @@ cmd_update_self() {
 # 只有 start 该关心配置是否有效 —— 配置坏了启动也是白启，不如早点说
 cmd_start() {
     cfg_check || return 1
-    svc_start && { core_info "sing-box started"; sleep 1; net_exit_refresh; } || {
+    if svc_start; then
+        core_info "sing-box started"
+        sleep 1
+        # 刷新失败不能影响 start 的成败判定 —— 取不到出口 IP 是小事
+        net_exit_refresh || core_warn "出口 IP 暂时取不到"
+    else
         core_error "启动失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
         return 1
-    }
+    fi
 }
 
 # 不检查配置：停服务和配置对不对无关。恰恰是配置坏了的时候最需要停得下来
 cmd_stop() {
-    svc_stop && core_info "sing-box stopped" || {
+    if svc_stop; then
+        core_info "sing-box stopped"
+        sleep 1
+        net_exit_refresh || core_warn "出口 IP 暂时取不到"
+    else
         core_error "停止失败"
         return 1
-    }
+    fi
 }
 
 cmd_restart() {
     cfg_check || return 1
-    svc_restart && { core_info "sing-box restarted"; sleep 1; net_exit_refresh; } || {
+    if svc_restart; then
+        core_info "sing-box restarted"
+        sleep 1
+        net_exit_refresh || core_warn "出口 IP 暂时取不到"
+    else
         core_error "重启失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
         return 1
-    }
+    fi
 }
 
 # 同样不检查配置：状态该如实显示，不该因为配置无效就拒绝回答
@@ -637,8 +664,10 @@ cmd_remove() {
     case "$choice" in
     [Yy]) : ;;
     *)
+        # 返回 1 表示「什么都没做」。菜单据此判断是否退出：
+        # 只有真正删干净了才该离开菜单，取消不该
         core_info "已取消"
-        return 0
+        return 1
         ;;
     esac
     svc_purge
@@ -695,7 +724,12 @@ cli_menu_draw() {
         scolor="$C_DIM"
     fi
 
-    ver=$(kern_version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -1) || ver=""
+    if ver=$(kern_version 2>/dev/null); then
+        ver=$(printf '%s' "$ver" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*') || ver=""
+        ver=${ver%%$'\n'*}
+    else
+        ver=""
+    fi
     [ -n "$ver" ] || ver="not installed"
     tun=$(tun_info 2>/dev/null | awk '{print $1" "$2}') || tun=""
     uptime=$(svc_uptime_sec 2>/dev/null) && uptime="up $(fmt_dur "$uptime")" || uptime=""
@@ -712,7 +746,9 @@ cli_menu_draw() {
     if { read -r ip; read -r loc; read -r age; } < <(net_exit_cached) 2>/dev/null && [ -n "${ip:-}" ]; then
         printf -v l3p '  exit  %s  %s' "$ip" "$loc"
         printf -v l3c '%s  exit  %s  %s%s' "$C_DIM" "$ip" "$loc" "$C_RESET"
-        ui_lr "$l3p" "$age  " "$l3c" "$C_DIM$age$C_RESET  "
+        local agec="$C_DIM$age$C_RESET"
+        [ "$age" = stale ] && agec="$C_YELLOW$age$C_RESET"
+        ui_lr "$l3p" "$age  " "$l3c" "$agec  "
     else
         ui_lr "  exit  n/a" "" "$C_DIM  exit  n/a$C_RESET" ""
     fi
@@ -765,12 +801,15 @@ cli_menu() {
         k) cmd_update_kernel; cli_menu_pause ;;
         c) cmd_update_config; cli_menu_pause ;;
         u)
-            cmd_update_self
-            core_info "脚本已更新，退出以加载新版本"
-            return 0
+            if cmd_update_self; then
+                core_info "脚本已更新，退出以加载新版本"
+                return 0
+            fi
+            cli_menu_pause
             ;;
         d)
-            cmd_remove && return 0
+            # cmd_remove 取消或失败都返回 1，此时留在菜单
+            if cmd_remove; then return 0; fi
             cli_menu_pause
             ;;
         q | $'\e') printf '\e[H\e[2J'; return 0 ;;
