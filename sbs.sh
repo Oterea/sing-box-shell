@@ -300,7 +300,12 @@ ui_measure() {
 }
 
 ui_redraw() {
-    local nl=$'\n' k=$'\e[K' buf="${UI_BUF%$'\n'}" nls rows
+    # 行尾用 \r\n 而不是裸 \n。光靠 \n 下移一行、回不回第 0 列取决于终端的
+    # ONLCR —— 而 sudo（sudoers 里 Defaults use_pty，Ubuntu 22.04+ 的默认）
+    # 中继期间会把终端置成 raw 模式，OPOST/ONLCR 一关，落在那个窗口里的帧就
+    # 每行往右缩一截，变成一屏阶梯。实测同一份代码两次运行，一次全是 \r\n，
+    # 一次 84 个裸 \n。自己补上 \r 就跟终端模式无关了。
+    local nl=$'\n' k=$'\e[K\r' buf="${UI_BUF%$'\n'}" nls rows
     # 窗口被拖动过：终端已经把旧内容按新尺寸重排了一遍，\e[H 之后逐行覆盖
     # 盖不干净，只能整屏清掉重来
     if [ "$UI_WINCH" -eq 1 ]; then
