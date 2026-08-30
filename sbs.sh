@@ -1676,14 +1676,6 @@ Usage:
 USAGE
 }
 
-# 要选版本、填地址的操作只在菜单里做。命令行再实现一套文字问答，等于同一件
-# 事维护两种交互 —— 之前就是这么漂移的：菜单版有三角形选中、esc 取消、地址
-# 非法就地重问，CLI 版一个都没跟上。
-_menu_only() { # $1=菜单里对应的键 $2=中文说明
-    core_error "$2 要选版本/填地址，请跑 sbs 进菜单，按 $1"
-    return 1
-}
-
 cli_dispatch() {
     local cmd="${1:-}" sub="${2:-}"
     case "$cmd" in
@@ -1694,8 +1686,6 @@ cli_dispatch() {
     update)
         case "$sub" in
         sbs) cmd_update_self ;;
-        "") _menu_only k "更新内核" ;;
-        config) _menu_only c "更新配置" ;;
         *)
             core_error "未知子命令: update $sub"
             cli_help
@@ -1703,8 +1693,6 @@ cli_dispatch() {
             ;;
         esac
         ;;
-    install) _menu_only k 安装 ;;
-    remove) _menu_only d 卸载 ;;
     help | -h | --help) cli_help ;;
     "")
         # 非 tty（管道、脚本调用）不进菜单，保持可脚本化
