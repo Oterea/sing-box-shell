@@ -143,31 +143,57 @@ ui_init_charset() {
 # 大写 SBS，紫 -> 粉 -> 橙横向渐变。开头拼一次，之后每帧直接用。
 # 三档降级：真彩 -> 256 色 -> 无色。真彩看 COLORTERM 而不是 tput ——
 # ncurses 只认 terminfo 里声明的色数，而绝大多数终端的 terminfo 只写到 256
-ui_build_logo() {
-    local art=(
-        '   _____ ____  _____'
-        '  / ___// __ )/ ___/'
-        '  \__ \/ __  |\__ \ '
-        ' ___/ / /_/ /___/ / '
-        '/____/_____//____/  '
-    )
-    local mode=0 row col ch t r g b out='' w=20 den=19
-    if [ -n "$C_RESET$C_CYAN" ]; then
-        case "${COLORTERM:-}" in
-        truecolor | 24bit) mode=24 ;;
-        *) [ "$(tput colors 2>/dev/null || echo 0)" -ge 256 ] && mode=8 ;;
-        esac
-    fi
+# 色深：24=真彩 8=256 色 0=不上色。
+# 不能只信 tput —— ssh 不转发 COLORTERM，而服务器上往往没有客户端那套
+# terminfo（实测 xterm-ghostty 就没有，tput colors 直接报 unknown terminal），
+# 于是真彩终端会被判成无色。所以再按 TERM 的名字认一遍。
+ui_color_depth() {
+    case "${COLORTERM:-}" in
+    truecolor | 24bit)
+        printf 24
+        return
+        ;;
+    esac
+    case "${TERM:-}" in
+    *-direct* | *truecolor* | *ghostty* | *kitty* | alacritty* | wezterm* | contour* | foot* | *-24bit*)
+        printf 24
+        return
+        ;;
+    *256color* | *-256*)
+        printf 8
+        return
+        ;;
+    esac
+    # terminfo 认得且够 256 色就用；认不得（tput 报错）也别退到无色 ——
+    # 走到这里说明外面已经判定「该上色」了，近十几年的终端都支持 256
+    [ "$(tput colors 2>/dev/null || echo 256)" -ge 256 ] && printf 8 || printf 0
+}
+
+UI_ART=(
+    '   _____ ____  _____'
+    '  / ___// __ )/ ___/'
+    '  \__ \/ __  |\__ \ '
+    ' ___/ / /_/ /___/ / '
+    '/____/_____//____/  '
+)
+
+# 拼一帧 logo，结果写 UI_LOGO。$1=相位（0 为静态那帧）。
+# 相位让色带横向流动：t 走到头再折返，所以循环起来是无缝的
+ui_logo_render() {
+    local ph=${1:-0} mode row col ch t r g b out='' w=20 den=19
+    mode=$(ui_color_depth)
+    [ -n "$C_RESET$C_CYAN" ] || mode=0
     if [ "$mode" -eq 0 ]; then
-        printf -v UI_LOGO '%s\n' "${art[@]}"
+        printf -v UI_LOGO '%s\n' "${UI_ART[@]}"
         UI_LOGO+=$'\n'
         return 0
     fi
-    for row in "${art[@]}"; do
+    for row in "${UI_ART[@]}"; do
         col=0
         while [ "$col" -lt "$w" ]; do
             ch=${row:col:1}
-            t=$((col * 1000 / den))
+            t=$(((col * 1000 / den + ph) % 2000))
+            [ "$t" -gt 1000 ] && t=$((2000 - t))
             if [ "$t" -lt 500 ]; then
                 r=$((139 + (236 - 139) * t / 500))
                 g=$((92 + (72 - 92) * t / 500))
@@ -188,6 +214,23 @@ ui_build_logo() {
         out+="$C_RESET"$'\n'
     done
     UI_LOGO="$out"$'\n'
+}
+
+ui_build_logo() { ui_logo_render 0; }
+
+# 进菜单时色带流动一遍再定住。只在这一处放动画 —— 菜单平时是「按键才重画」
+# 的快照，常驻动画得另起一个重画循环，既费 CPU 又和阻塞读键打架
+ui_logo_intro() {
+    [ -n "$UI_LOGO" ] || return 0
+    [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ] || return 0
+    [ "$(ui_color_depth)" -gt 0 ] || return 0
+    local ph
+    for ph in $(seq 0 80 2000); do
+        ui_logo_render "$ph"
+        printf '%s%s' "$UI_HOME" "${UI_LOGO//$'\n'/$'\e[K\r\n'}" >&$UI_FD
+        sleep 0.07
+    done
+    ui_logo_render 0
 }
 
 # 终端控制
@@ -1848,6 +1891,7 @@ cli_menu() {
     ui_measure
     # 无论怎么退出（正常 / Ctrl-C / 报错）都要把光标恢复出来
     ui_session_begin
+    ui_logo_intro
     while true; do
         cli_menu_draw
         ui_read_key

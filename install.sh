@@ -7,10 +7,17 @@ exec="/usr/local/bin/sbs"
 # 三档：真彩 -> 256 色 -> 无色。真彩看 COLORTERM 而不是 tput —— ncurses 只认
 # terminfo 里声明的色数，而绝大多数终端的 terminfo 只写到 256。
 # 输出不是终端（重定向、管道）或 NO_COLOR 时一个转义序列都不发。
+# 不能只信 tput：ssh 不转发 COLORTERM，而服务器上往往没有客户端那套 terminfo
+# （实测 xterm-ghostty 就没有，tput colors 直接报 unknown terminal），真彩终端
+# 会被判成无色。所以再按 TERM 的名字认一遍。
 CMODE=0
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
     case "${COLORTERM:-}" in
     truecolor | 24bit) CMODE=24 ;;
+    esac
+    [ "$CMODE" -eq 0 ] && case "${TERM:-}" in
+    *-direct* | *truecolor* | *ghostty* | *kitty* | alacritty* | wezterm* | contour* | foot* | *-24bit*) CMODE=24 ;;
+    *256color* | *-256*) CMODE=8 ;;
     *) [ "$(tput colors 2>/dev/null || echo 0)" -ge 256 ] && CMODE=8 ;;
     esac
 fi
@@ -20,26 +27,29 @@ else
     DIM='' GREEN='' RED='' BOLD='' RESET=''
 fi
 
-# 大写 SBS，紫 -> 粉 -> 橙横向渐变
+ART=(
+    '   _____ ____  _____'
+    '  / ___// __ )/ ___/'
+    '  \__ \/ __  |\__ \ '
+    ' ___/ / /_/ /___/ / '
+    '/____/_____//____/  '
+)
+
+# 大写 SBS，紫 -> 粉 -> 橙横向渐变。$1=相位，让色带横向流动；
+# t 走到头折返，所以循环无缝
 logo() {
-    local art=(
-        '   _____ ____  _____'
-        '  / ___// __ )/ ___/'
-        '  \__ \/ __  |\__ \ '
-        ' ___/ / /_/ /___/ / '
-        '/____/_____//____/  '
-    )
-    local row col ch t r g b w=20 den=19
+    local ph=${1:-0} row col ch t r g b w=20 den=19
     if [ "$CMODE" -eq 0 ]; then
-        printf '%s\n' "${art[@]}"
+        printf '%s\n' "${ART[@]}"
         echo
         return 0
     fi
-    for row in "${art[@]}"; do
+    for row in "${ART[@]}"; do
         col=0
         while [ "$col" -lt "$w" ]; do
             ch=${row:col:1}
-            t=$((col * 1000 / den))
+            t=$(((col * 1000 / den + ph) % 2000))
+            [ "$t" -gt 1000 ] && t=$((2000 - t))
             if [ "$t" -lt 500 ]; then
                 r=$((139 + (236 - 139) * t / 500))
                 g=$((92 + (72 - 92) * t / 500))
@@ -62,7 +72,17 @@ logo() {
     echo
 }
 
-logo
+# 色带流动一遍再定住
+if [ "$CMODE" -gt 0 ]; then
+    logo 0
+    for ph in $(seq 80 80 2000); do
+        printf '\033[6A'
+        logo "$ph"
+        sleep 0.07
+    done
+    printf '\033[6A'
+fi
+logo 0
 
 [ -d /usr/local/bin ] || {
     sudo mkdir -p /usr/local/bin && sudo chmod 755 /usr/local/bin
