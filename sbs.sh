@@ -229,9 +229,14 @@ ui_out() {
 # 走 stderr —— 这是「画屏幕」不是「输出数据」。若走 stdout，
 # key=$(ui_choose ...) 这类命令替换会把整个界面吞进变量，屏幕上什么都不显示。
 ui_redraw() {
-    # \e[J 清到屏幕底：上一帧若更高（任务视图 8 行 -> 菜单 4 行），
-    # 多出来的旧行必须抹掉，否则会留在框下面
-    printf '%s%s%s\e[J%s' "$UI_SYNC_ON" "$UI_HOME" "${UI_BUF%$'\n'}" "$UI_SYNC_OFF" >&2
+    # 每行末尾补 \e[K 清到行尾。下载时 eta 会从 "eta 1h 20m" 缩到 "eta 0s"，
+    # 行一变短，旧帧右边多出来的字符就原地留着 —— 看起来就是框的右边线旁边
+    # 又多一根竖线。\e[J 只清光标之后的整屏，管不到每一行各自的行尾。
+    #
+    # \e[J 仍然要留：上一帧若更高（任务 8 行 -> 菜单 4 行），多出来的整行
+    # 得抹掉，否则会挂在框下面
+    local nl=$'\n' k=$'\e[K' buf="${UI_BUF%$'\n'}"
+    printf '%s%s%s\e[K\e[J%s' "$UI_SYNC_ON" "$UI_HOME" "${buf//$nl/$k$nl}" "$UI_SYNC_OFF" >&2
 }
 
 # ── footer 区 ──
@@ -1147,7 +1152,10 @@ dl_content_length() { # $1=url
 dl_with_progress() {
     local dst="$1" url="$2" idx="$3"
     local total now prev=0 t0 elapsed spd pct eta bar f
-    local w=18 # 进度条列宽。20 会让「条+百分比+速率+eta」超出框宽一列
+    # 进度条列宽。左半边 = 2+符号+2+名字10 + 条 + " nnn%" = 20+w，
+    # 右半边最长 "12.3M/s  eta 23h 59m" 20 字再加 2 字尾距。框内只有 56，
+    # 所以 w=16 配合下面对右半边 18 字的封顶才刚好放得下
+    local w=16
     total=$(dl_content_length "$url")
     t0=$(date +%s)
 
@@ -1176,7 +1184,11 @@ dl_with_progress() {
                 eta="eta $(fmt_dur $(((total - now) * elapsed / now)))"
             else eta=""; fi
             TASK_DETAIL[$idx]="$bar $(printf '%3d' $pct)%"
-            TASK_RIGHT[$idx]="$spd/s${eta:+  $eta}"
+            # 速率快且 eta 长时两者加起来会撑破框。放不下就丢掉 eta ——
+            # 真到这一步说明慢到 24MB 要下一天，那时候速率才是要看的
+            local r="$spd/s${eta:+  $eta}"
+            [ "${#r}" -gt 18 ] && r="$spd/s"
+            TASK_RIGHT[$idx]="$r"
         else
             TASK_DETAIL[$idx]="$(fmt_size "$now")"
             TASK_RIGHT[$idx]="$spd/s"
