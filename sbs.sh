@@ -155,16 +155,49 @@ ui_blank() { ui_add "$(printf '%s%*s%s' "$UI_V" "$UI_IN" '' "$UI_V")"; }
 
 # 一行左右两段。$1/$2 是纯文本（只用来算 padding），$3/$4 是带色版本（负责显示）。
 # 必须分开：颜色转义序列会被 ${#str} 算进长度，拿带色串算 padding 必歪。
-ui_lr() {
-    local pad=$((UI_IN - ${#1} - ${#2}))
+# 可见宽度：把转义序列剥掉再数。结果放 UI_VIS，剥干净的纯文本放 UI_VIS_TXT。
+# 认两类：CSI（\e[ 到 @-~ 收尾，颜色的 \e[31m 属于此类）和字符集选择
+# （\e(B 之类两字节，tput sgr0 在很多终端上就是 \e(B\e[m 这么一对）。
+# 不走 sed —— 这函数每次重画每行都要跑一遍，不能每行 fork 一次。
+ui_vis() {
+    local s="$1" o=""
+    while [[ $s == *$'\e'* ]]; do
+        o+="${s%%$'\e'*}"
+        s="${s#*$'\e'}"
+        case $s in
+        '['*)
+            s="${s#?}"
+            while [[ -n $s && $s != [@-~]* ]]; do s="${s#?}"; done
+            s="${s#?}"
+            ;;
+        [\(\)*+]*) s="${s#??}" ;;
+        *) s="${s#?}" ;;
+        esac
+    done
+    o+="$s"
+    UI_VIS_TXT="$o"
+    UI_VIS=${#o}
+}
+
+# 只认带色版，宽度由它自己算出来。
+# 原来的签名是「纯左 纯右 带色左 带色右」—— 每行写两遍，拿纯的算宽度、
+# 打印带色的。两遍一旦不一致（比如带色版里多个 spinner 而纯版忘了写），
+# 行就画歪，而且不报错。宽度既然能从带色版算出来，纯文本版就不该存在。
+ui_lr() { # $1=左 $2=右，都可带色
+    local a b at pad
+    ui_vis "$1"
+    a=$UI_VIS at="$UI_VIS_TXT"
+    ui_vis "$2"
+    b=$UI_VIS
+    pad=$((UI_IN - a - b))
     if [ "$pad" -lt 0 ]; then
-        # 放不下就退回「无色 + 裁剪」。带色版里混着转义序列，按可见宽度裁剪
-        # 不安全，所以只裁纯文本版。宁可这一行掉色，也不能把框撑破 ——
-        # 原来这里是把 pad 钳到 0 完事，行照样变长，而且不报错，只会默默画歪
-        ui_add "$UI_V$(ui_fit "$1" $((UI_IN - ${#2})))$2$UI_V"
+        # 放不下就退回「无色 + 裁剪」。按可见宽度裁带色串要在转义序列中间
+        # 下刀，不安全，所以裁剥干净的那份。宁可这一行掉色也不能把框撑破,
+        # 而且掉色本身就是溢出的信号
+        ui_add "$UI_V$(ui_fit "$at" $((UI_IN - b)))$2$UI_V"
         return
     fi
-    ui_add "$(printf '%s%s%*s%s%s' "$UI_V" "${3:-$1}" "$pad" '' "${4:-$2}" "$UI_V")"
+    ui_add "$(printf '%s%s%*s%s%s' "$UI_V" "$1" "$pad" '' "$2" "$UI_V")"
 }
 
 # 分区标题嵌在边线上：├─ service ────┤
@@ -175,14 +208,6 @@ ui_sec() {
     local n=$((UI_IN - ${#t} - 3))
     [ "$n" -lt 0 ] && n=0
     ui_add "$(printf '%s%s %s%s%s %s%s' "$lc" "$UI_H" "$C_DIM" "$t" "$C_RESET" "$(ui_bar $n)" "$rc")"
-}
-
-# 键值行，键固定 10 列并置灰
-ui_kv() {
-    local plain colored
-    printf -v plain '  %-10s%s' "$1" "$2"
-    printf -v colored '  %s%-10s%s%s' "$C_DIM" "$1" "$C_RESET" "${4:-$2}"
-    ui_lr "$plain" "$3" "$colored" "${5:-$3}"
 }
 
 # 值太长时截断，保证不撑破框
@@ -209,18 +234,14 @@ _ui_cell() {
 }
 
 ui_item() {
-    local plain colored
-    printf -v plain '    %s   %-15s  %s   %-15s' "$1" "$2" "$3" "$4"
-    printf -v colored '    %s  %s' "$(_ui_cell "$1" "$2" "${5:-}")" "$(_ui_cell "$3" "$4" "${6:-}")"
-    ui_lr "$plain" "" "$colored" ""
+    ui_lr "    $(_ui_cell "$1" "$2" "${5:-}")  $(_ui_cell "$3" "$4" "${6:-}")" ""
 }
 
 # 步骤行：状态列前置 1 列。$1=状态符 $2=步骤名 $3=细节 $4=右侧 $5=状态色
 ui_step() {
-    local plain colored
-    printf -v plain '  %s  %-10s%s' "$1" "$2" "$3"
+    local colored
     printf -v colored '  %s%s%s  %s%-10s%s%s' "$5" "$1" "$C_RESET" "$C_DIM" "$2" "$C_RESET" "$3"
-    ui_lr "$plain" "${4:+$4  }" "$colored" "$C_DIM${4:+$4  }$C_RESET"
+    ui_lr "$colored" "$C_DIM${4:+$4  }$C_RESET"
 }
 
 # body 补齐到固定高度，重绘时框才不跳动
@@ -256,10 +277,10 @@ ui_redraw() {
 # 菜单永远绘制，footer 随当前活动伸缩：空闲 0 行、有结果 1 行、
 # 任务进行中 N 行（步骤列表）、失败 N 行（步骤 + 建议）。
 # 没有视图切换，没有模态 —— 这是整个界面唯一会变高的部分。
-FOOT_L=() FOOT_R=() FOOT_LC=() FOOT_RC=()
-foot_reset() { FOOT_L=() FOOT_R=() FOOT_LC=() FOOT_RC=(); }
-foot_add() { # $1=纯左 $2=纯右 $3=带色左 $4=带色右
-    FOOT_L+=("$1") FOOT_R+=("${2:-}") FOOT_LC+=("${3:-$1}") FOOT_RC+=("${4:-${2:-}}")
+FOOT_L=() FOOT_R=()
+foot_reset() { FOOT_L=() FOOT_R=(); }
+foot_add() { # $1=左 $2=右，都可带色
+    FOOT_L+=("$1") FOOT_R+=("${2:-}")
 }
 foot_rows() { printf '%s' "${#FOOT_L[@]}"; }
 
@@ -1132,8 +1153,6 @@ task_draw() {
         *) sym=" " color="$C_DIM" ;;
         esac
         foot_add \
-            "  $sym  $(printf '%-10s' "${TASK_NAMES[$i]}")${TASK_DETAIL[$i]}" \
-            "${TASK_RIGHT[$i]:+${TASK_RIGHT[$i]}  }" \
             "  $color$sym$C_RESET  $C_DIM$(printf '%-10s' "${TASK_NAMES[$i]}")$C_RESET${TASK_DETAIL[$i]}" \
             "$C_DIM${TASK_RIGHT[$i]:+${TASK_RIGHT[$i]}  }$C_RESET"
     done
@@ -1141,7 +1160,7 @@ task_draw() {
         foot_add "" ""
         local h
         for h in "${TASK_HINT[@]}"; do
-            foot_add "  $h" "" "$C_DIM  $h$C_RESET" ""
+            foot_add "$C_DIM  $h$C_RESET" ""
         done
     fi
     cli_menu_draw
@@ -1232,18 +1251,17 @@ ui_choose() {
     local title="$1"
     shift
     local opts=("$@")
-    local cur=0 key i lp lc
+    local cur=0 key i lc
     local hint="enter ok   esc cancel  "
     # 标题超长会把提示挤出框外。ui_lr 遇到负 padding 只是钳到 0，行照样变长、
     # 框照样破，所以在这里先裁进可用宽度
     title=$(ui_fit "$title" $((UI_IN - ${#hint} - 4)))
     while true; do
         foot_reset
-        foot_add "  $title" "$hint" \
-            "$C_DIM  $title$C_RESET" \
+        foot_add "$C_DIM  $title$C_RESET" \
             "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
         # 每个选项前留一格给三角标记，未选中时留空 —— 这样切换时文字不会左右跳
-        lp="   " lc="   "
+        lc="   "
         for i in "${!opts[@]}"; do
             if [ "$i" -eq "$cur" ]; then
                 # 三角 + 反色，两者分工不同：
@@ -1251,14 +1269,12 @@ ui_choose() {
                 #     颜色全失效，它是唯一还能指出选中项的东西
                 #   反色是「颜色」线索 —— \e[7m 是相对当前主题取反而非固定颜色，
                 #     深色浅色主题下都必然是高对比块，比青色之类稳得多
-                lp+="$UI_SEL  ${opts[$i]}     "
                 lc+="$C_CYAN$UI_SEL$C_RESET $C_REV ${opts[$i]} $C_RESET    "
             else
-                lp+="   ${opts[$i]}     "
                 lc+="   $C_DIM${opts[$i]}$C_RESET     "
             fi
         done
-        foot_add "$lp" "" "$lc" ""
+        foot_add "$lc" ""
         cli_menu_draw
         ui_read_key
         key=$UI_KEY
@@ -1277,7 +1293,7 @@ ui_choose() {
             # esc 没生效 —— 于是再按一次，那一次其实只是把残留清掉了。
             # 「按两次 esc 才有用」就是这么来的。
             foot_reset
-            foot_add "  cancelled" "" "$C_DIM  cancelled$C_RESET" ""
+            foot_add "$C_DIM  cancelled$C_RESET" ""
             return 1
             ;;
         esac
@@ -1294,13 +1310,13 @@ ui_input() { # $1=标题 $2=预填值 $3=可选提示，敲第一个键就让位
     local title="$1" val="$2" note="${3:-}" disp k
     while true; do
         foot_reset
-        foot_add "  ${note:-$title}" "enter ok   esc cancel  " \
-            "$C_DIM  ${note:-$title}$C_RESET" "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
+        foot_add "$C_DIM  ${note:-$title}$C_RESET" \
+            "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
         # 地址通常比框还长，看尾巴 —— 那才是正在敲的一头
         disp="$val"
         [ "${#disp}" -gt 50 ] && disp="...${val: -47}"
         # 行尾那个反色空格是光标，纯文本版对应补一个空格好让宽度算得准
-        foot_add "  > $disp " "" "  $C_CYAN>$C_RESET $disp$C_REV $C_RESET" ""
+        foot_add "  $C_CYAN>$C_RESET $disp$C_REV $C_RESET" ""
         cli_menu_draw
 
         ui_read_key
@@ -1312,7 +1328,7 @@ ui_input() { # $1=标题 $2=预填值 $3=可选提示，敲第一个键就让位
             ;;
         esc)
             foot_reset
-            foot_add "  cancelled" "" "$C_DIM  cancelled$C_RESET" ""
+            foot_add "$C_DIM  cancelled$C_RESET" ""
             return 1
             ;;
         left | right | up | down) continue ;;
@@ -1351,13 +1367,12 @@ menu_quick() { # $1=动作函数 $2=成功文案 $3=动作名
     rc=$?
     foot_reset
     if [ "$rc" -eq 0 ]; then
-        foot_add "  $2" "" "$C_GREEN  $2$C_RESET" ""
+        foot_add "$C_GREEN  $2$C_RESET" ""
         return 0
     fi
     first=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -viE '^\[info\]|^$' | head -n 1)
-    foot_add "  $3 failed" "" "$C_RED  $3 failed$C_RESET" ""
-    foot_add "  $(ui_fit "${first:-something went wrong}" 52)" "" \
-        "$C_DIM  $(ui_fit "${first:-something went wrong}" 52)$C_RESET" ""
+    foot_add "$C_RED  $3 failed$C_RESET" ""
+    foot_add "$C_DIM  $(ui_fit "${first:-something went wrong}" 52)$C_RESET" ""
     return 1
 }
 
@@ -1652,7 +1667,7 @@ hdr_fields() {
 
 ui_menu_header() {
     local state scolor ver tun uptime ip loc age
-    local l2p l2c l3p l3c
+    local l2p l2c l3c
 
     case "$SVC_STATE" in
     active)
@@ -1678,8 +1693,8 @@ ui_menu_header() {
     ui_top
     local title
     if [ -f "$SBS_BIN" ]; then title="${SBS_BIN/#$HOME/\~}"; else title="sing-box"; fi
-    ui_lr "  $title" "$UI_DOT $state${uptime:+  $uptime}  " \
-        "$C_BOLD  $title$C_RESET" "$scolor$UI_DOT $state$C_RESET$C_DIM${uptime:+  $uptime}$C_RESET  "
+    ui_lr "$C_BOLD  $title$C_RESET" \
+        "$scolor$UI_DOT $state$C_RESET$C_DIM${uptime:+  $uptime}$C_RESET  "
 
     # 配置是否合法挂在第 2 行右角常驻。这是 header 里唯一需要跑一次
     # sing-box check 的字段（306 节点约几十毫秒），值得 —— 光看 RUNNING
@@ -1693,10 +1708,9 @@ ui_menu_header() {
     printf -v l2p '  %s   %s' "$ver" "${tun:-no tun}"
     l2p=$(ui_fit "$l2p" $((UI_IN - ${#valid} - 10)))
     l2c="$C_DIM$l2p$C_RESET"
-    ui_lr "$l2p" "config $valid  " "$l2c" "${C_DIM}config$C_RESET $vcolor$valid$C_RESET  "
+    ui_lr "$l2c" "${C_DIM}config$C_RESET $vcolor$valid$C_RESET  "
 
     if { read -r ip; read -r loc; read -r age; } < <(net_exit_cached) 2>/dev/null && [ -n "${ip:-}" ]; then
-        printf -v l3p '  %s  %s' "$ip" "$loc"
         printf -v l3c '%s  %s  %s%s' "$C_DIM" "$ip" "$loc" "$C_RESET"
         local agec="$C_DIM$age$C_RESET"
         [ "$age" = stale ] && agec="$C_YELLOW$age$C_RESET"
@@ -1704,15 +1718,14 @@ ui_menu_header() {
             age="refreshing"
             agec="$C_CYAN$age$C_RESET"
         fi
-        ui_lr "$l3p" "$age  " "$l3c" "$agec  "
+        ui_lr "$l3c" "$agec  "
     else
-        ui_lr "  no exit ip yet" "" "$C_DIM  no exit ip yet$C_RESET" ""
+        ui_lr "$C_DIM  no exit ip yet$C_RESET" ""
     fi
 
     # 第 4 行只在出问题时出现。restarts 常态为 0，常驻显示纯粹是噪音
     if [ "${SVC_NRESTARTS:-0}" -gt 0 ] 2>/dev/null; then
-        ui_lr "  restarted $SVC_NRESTARTS times - check the logs" "" \
-            "$C_YELLOW  restarted $SVC_NRESTARTS times - check the logs$C_RESET" ""
+        ui_lr "$C_YELLOW  restarted $SVC_NRESTARTS times - check the logs$C_RESET" ""
     fi
 }
 
@@ -1754,7 +1767,7 @@ cli_menu_draw() {
     if [ "${#FOOT_L[@]}" -gt 0 ]; then
         ui_sep
         for i in "${!FOOT_L[@]}"; do
-            ui_lr "${FOOT_L[$i]}" "${FOOT_R[$i]}" "${FOOT_LC[$i]}" "${FOOT_RC[$i]}"
+            ui_lr "${FOOT_L[$i]}" "${FOOT_R[$i]}"
         done
     fi
     ui_bot
@@ -1807,13 +1820,13 @@ cli_menu() {
             ;;
         f)
             foot_reset
-            foot_add "  refreshing" "" "$C_CYAN  ${UI_SPIN[0]}$C_RESET  ${C_DIM}refreshing$C_RESET" ""
+            foot_add "$C_CYAN  ${UI_SPIN[0]}$C_RESET  ${C_DIM}refreshing$C_RESET" ""
             cli_menu_draw
             foot_reset
             if net_exit_refresh; then
-                foot_add "  refreshed" "" "$C_GREEN  refreshed$C_RESET" ""
+                foot_add "$C_GREEN  refreshed$C_RESET" ""
             else
-                foot_add "  exit ip unavailable" "" "$C_YELLOW  exit ip unavailable$C_RESET" ""
+                foot_add "$C_YELLOW  exit ip unavailable$C_RESET" ""
             fi
             ;;
         q)
