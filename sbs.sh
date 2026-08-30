@@ -1162,8 +1162,25 @@ ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
     wait "$pid"
 }
 
-# 任务视图版：每拍重画整个步骤列表
-task_wait() { ui_wait_pid "$1" task_draw; }
+# 在任务视图里跑一条命令：后台执行、spinner 转起来，返回它自己的退出码，
+# 130 表示用户按 esc 取消
+task_run() {
+    "$@" &
+    ui_wait_pid $! task_draw
+}
+
+# 同上，外加把命令的 stdout 收进 REPLY。省掉每个调用点自己 mktemp、读回、
+# rm 的那一圈样板
+task_capture() {
+    local t rc
+    t=$(mktemp) || return 1
+    "$@" >"$t" 2>/dev/null &
+    ui_wait_pid $! task_draw
+    rc=$?
+    REPLY=$(cat "$t" 2>/dev/null)
+    rm -f "$t"
+    return "$rc"
+}
 
 # footer 里转一个 spinner 等命令跑完，不进任务视图。$1=文案 $2..=要跑的命令。
 # 注意命令是在后台子 shell 里跑的，它设的变量传不回来 —— 结果只能走文件或
@@ -1228,65 +1245,57 @@ dl_content_length() { # $1=url
 }
 
 # $1=目标文件 $2=完整 URL $3=步骤下标
-dl_with_progress() {
-    local dst="$1" url="$2" idx="$3"
-    local total now prev=0 t0 elapsed spd pct eta bar f
+# 下载进度：这是喂给 ui_wait_pid 的重画函数，每拍算一次进度再画。
+# 状态走 DL_* 全局而不是闭包 —— bash 没有闭包，重画函数只能这么拿到上下文。
+DL_DST='' DL_TOTAL=0 DL_T0=0 DL_IDX=0 DL_RW=0
+_dl_draw() {
     # 条宽不写死。这一行的账是
     #   2 缩进 + 1 符号 + 2 + 10 名字 + w 条 + 5 " nnn%" + rw 右半边 + 2 尾距 <= UI_IN
-    # 前后那些固定部分合计 22（WFIX），剩下的都给条：w = UI_IN - 22 - rw。
+    # 前后那些固定部分合计 22，剩下的都给条：w = UI_IN - 22 - rw。
     # rw 取「见过的最长右半边」，只增不减且按 4 格取整 —— eta 并不是单调变短
     # 的，"eta 2m" 跳到 "eta 39s" 反而长了一个字，不取整条宽就会中途抖一格。
-    local WFIX=22 rw=0 w=0
-    total=$(dl_content_length "$url")
-    t0=$(date +%s)
+    local wfix=22 now elapsed spd pct eta bar f r w
+    now=$(stat -c %s "$DL_DST" 2>/dev/null || echo 0)
+    elapsed=$(($(date +%s) - DL_T0))
+    [ "$elapsed" -lt 1 ] && elapsed=1
+    spd=$(fmt_size $((now / elapsed)))
+    if [ "$DL_TOTAL" -gt 0 ]; then
+        pct=$((now * 100 / DL_TOTAL))
+        [ "$pct" -gt 100 ] && pct=100
+        if [ "$now" -gt 0 ] && [ "$now" -lt "$DL_TOTAL" ]; then
+            eta="eta $(fmt_dur $(((DL_TOTAL - now) * elapsed / now)))"
+        else eta=""; fi
 
-    curl -fL --connect-timeout 5 --retry 2 -s -o "$dst" "$url" &
-    local pid=$!
+        # 先定右半边，再拿剩下的空间算条宽 —— 顺序反过来就又变成猜了
+        r="$spd/s${eta:+  $eta}"
+        # 条最窄留 8 格；右半边真宽到挤掉它，就丢 eta 保速率
+        [ "${#r}" -gt $((UI_IN - wfix - 8)) ] && r="$spd/s"
+        [ "${#r}" -gt "$DL_RW" ] && DL_RW=${#r}
+        w=$((UI_IN - wfix - (DL_RW + 3) / 4 * 4))
+        # 取整可能多吃几格，把条压到 8 以下。钳回 8 正好把预算还平
+        [ "$w" -lt 8 ] && w=8
 
-    while kill -0 "$pid" 2>/dev/null; do
-        now=$(stat -c %s "$dst" 2>/dev/null || echo 0)
-        elapsed=$(($(date +%s) - t0))
-        [ "$elapsed" -lt 1 ] && elapsed=1
-        spd=$(fmt_size $((now / elapsed)))
-        if [ "$total" -gt 0 ]; then
-            pct=$((now * 100 / total))
-            [ "$pct" -gt 100 ] && pct=100
-            if [ "$now" -gt 0 ] && [ "$now" -lt "$total" ]; then
-                eta="eta $(fmt_dur $(((total - now) * elapsed / now)))"
-            else eta=""; fi
+        f=$((pct * w / 100))
+        printf -v bar '%*s' "$f" ''
+        bar="${bar// /#}"
+        printf -v f '%*s' $((w - f)) ''
+        bar="$bar${f// /.}"
+        printf -v pct '%3d' "$pct"
+        TASK_DETAIL[$DL_IDX]="$bar $pct%"
+        TASK_RIGHT[$DL_IDX]="$r"
+    else
+        TASK_DETAIL[$DL_IDX]="$(fmt_size "$now")"
+        TASK_RIGHT[$DL_IDX]="$spd/s"
+    fi
+    task_draw
+}
 
-            # 先定右半边，再拿剩下的空间算条宽 —— 顺序反过来就又变成猜了
-            local r="$spd/s${eta:+  $eta}"
-            # 条最窄留 8 格；右半边真宽到挤掉它，就丢 eta 保速率
-            [ "${#r}" -gt $((UI_IN - WFIX - 8)) ] && r="$spd/s"
-            [ "${#r}" -gt "$rw" ] && rw=${#r}
-            # 按 4 格取整再算。eta 从 "2m" 跳到 "39s" 只差 1 个字，不取整的话
-            # 条宽会跟着抖一格；取整之后整场下载条宽纹丝不动
-            w=$((UI_IN - WFIX - (rw + 3) / 4 * 4))
-            # 取整可能多吃几格，把条压到 8 以下。钳回 8 正好把预算还平：
-            # 左 20+8 + 右 26+2 = 56
-            [ "$w" -lt 8 ] && w=8
-
-            f=$((pct * w / 100))
-            printf -v bar '%*s' "$f" ''
-            bar="${bar// /#}"
-            printf -v f '%*s' $((w - f)) ''
-            bar="$bar${f// /.}"
-            TASK_DETAIL[$idx]="$bar $(printf '%3d' $pct)%"
-            TASK_RIGHT[$idx]="$r"
-        else
-            TASK_DETAIL[$idx]="$(fmt_size "$now")"
-            TASK_RIGHT[$idx]="$spd/s"
-        fi
-        TASK_TICK=$((TASK_TICK + 1))
-        task_draw
-        if ui_tick 0.08; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null
-            return 130
-        fi
-    done
-    wait "$pid"
+dl_with_progress() { # $1=落地路径 $2=url $3=步骤下标
+    DL_DST="$1" DL_IDX="$3" DL_RW=0
+    DL_TOTAL=$(dl_content_length "$2")
+    DL_T0=$(date +%s)
+    curl -fL --connect-timeout 5 --retry 2 -s -o "$DL_DST" "$2" &
+    ui_wait_pid $! _dl_draw
 }
 
 # ── 选择视图：在同一个框里做单键选择 ──
@@ -1458,8 +1467,7 @@ task_update_config() {
     tmp="$SBS_WORK_DIR/.config.$$.json"
 
     task_step 0 "$(ui_fit "$sub" 38)"
-    (cfg_download "$sub" "$tmp") &
-    task_wait $!
+    task_run cfg_download "$sub" "$tmp"
     case $? in
     0) ;;
     130)
@@ -1575,7 +1583,7 @@ menu_remove_flow() {
 
 # ── 菜单里的「装/更新内核」完整流程 ──
 menu_kernel_flow() {
-    local tags stable beta tag url tmp
+    local tags stable beta tag url
     core_detect_target >/dev/null 2>&1 || {
         task_begin "update kernel" "" resolve
         task_step 0
@@ -1586,15 +1594,9 @@ menu_kernel_flow() {
     # 解析版本，spinner 转起来
     task_begin "update kernel" "" resolve
     task_step 0 "querying release tags"
-    tmp=$(mktemp) || return 1
-    (gh_resolve_tags >"$tmp" 2>/dev/null) &
-    task_wait $!
-    if [ $? -eq 130 ]; then
-        rm -f "$tmp"
-        return 130
-    fi
-    tags=$(cat "$tmp" 2>/dev/null)
-    rm -f "$tmp"
+    task_capture gh_resolve_tags
+    [ $? -eq 130 ] && return 130
+    tags="$REPLY"
     if [ -z "$tags" ]; then
         task_fail "cannot resolve" "cannot fetch the version list" "github.com and jsDelivr are both unreachable"
         return 1
