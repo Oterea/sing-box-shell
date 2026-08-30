@@ -960,11 +960,17 @@ _spin_draw() {
     foot_add "$C_CYAN  ${UI_SPIN[$((UI_TICK % 4))]}$C_RESET  $C_DIM$SPIN_LABEL$C_RESET" ""
     cli_menu_draw
 }
-ui_spin() {
+ui_spin() { # $1=文案 $2..=命令。命令的 stdout+stderr 收进 REPLY
+    local t rc
     SPIN_LABEL="$1"
     shift
-    "$@" &
+    t=$(mktemp) || return 1
+    "$@" >"$t" 2>&1 &
     ui_wait_pid $! _spin_draw
+    rc=$?
+    REPLY=$(cat "$t" 2>/dev/null)
+    rm -f "$t"
+    return "$rc"
 }
 
 # 把步骤列表塞进 footer 区，然后让菜单整体重绘。
@@ -1193,15 +1199,21 @@ ui_input() { # $1=标题 $2=预填值 $3=可选提示，敲第一个键就让位
 # ── 瞬时动作：成功就地反馈（不离开菜单），失败才进任务视图停住 ──
 # 瞬时动作。成功在 footer 留一行，失败留两行（原因 + 去哪看日志）
 menu_quick() { # $1=动作函数 $2=成功文案 $3=动作名
-    local out rc first
-    out=$("$1" 2>&1)
+    local rc first
+    # 原来是 out=$("$1" 2>&1) 全同步：systemctl 要跑多久屏幕就冻多久，
+    # 连一帧 spinner 都没有
+    ui_spin "$3" "$1"
     rc=$?
     foot_reset
     if [ "$rc" -eq 0 ]; then
         foot_add "$C_GREEN  $2$C_RESET" ""
         return 0
     fi
-    first=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -viE '^\[info\]|^$' | head -n 1)
+    if [ "$rc" -eq 130 ]; then
+        foot_add "$C_DIM  cancelled$C_RESET" ""
+        return 1
+    fi
+    first=$(printf '%s' "$REPLY" | sed 's/\x1b\[[0-9;]*m//g' | grep -viE '^\[info\]|^$' | head -n 1)
     foot_add "$C_RED  $3 failed$C_RESET" ""
     foot_add "$C_DIM  $(ui_fit "${first:-something went wrong}" 52)$C_RESET" ""
     return 1
@@ -1300,11 +1312,17 @@ task_update_self() {
     task_step 0
     for base in $(src_script | awk '!seen[$0]++'); do
         TASK_DETAIL[0]="$(ui_fit "${base#https://}" 40)"
-        task_draw
-        if curl -fsSL --connect-timeout 5 --retry 2 -o "$tmpdir/sbs.sh" "$base/sbs.sh"; then
+        task_run curl -fsSL --connect-timeout 5 --retry 2 -o "$tmpdir/sbs.sh" "$base/sbs.sh"
+        case $? in
+        0)
             ok=1
             break
-        fi
+            ;;
+        130)
+            rm -rf "$tmpdir"
+            return 130
+            ;;
+        esac
     done
     if [ "$ok" -ne 1 ]; then
         task_fail "all sources failed" "cannot fetch sbs.sh from any source" \
@@ -1348,10 +1366,10 @@ menu_remove_flow() {
 
     task_begin service files script
     task_step 0
-    svc_purge
+    task_run svc_purge # systemctl stop 可能要等服务自己收尾，别让屏幕冻着
     task_ok "unit disabled and removed" ""
     task_step 1
-    sudo rm -rf "$SBS_WORK_DIR"
+    task_run sudo rm -rf "$SBS_WORK_DIR"
     task_ok "$SBS_WORK_DIR" ""
     # 删掉自己之后本进程仍能跑完 —— bash 攥着已打开的 fd，inode 还活着
     task_step 2
@@ -1442,7 +1460,7 @@ task_install_kernel() { # $1=tag $2=下载地址
     task_ok "$(fmt_size "$(stat -c %s "$tarball" 2>/dev/null || echo 0)") downloaded" ""
 
     task_step 2
-    if ! kern_extract "$stage" "$tarball"; then
+    if ! task_run kern_extract "$stage" "$tarball"; then
         task_fail "extract failed" "extract failed, or no sing-box binary in the archive" "likely a partial download - retry"
         rm -rf "$stage"
         return 1
