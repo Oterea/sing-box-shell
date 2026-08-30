@@ -547,35 +547,35 @@ tun_info() {
 # 出口 IP 走缓存：菜单要瞬间打开，不能卡在网络请求上。
 # 只在状态可能变化时（启停、看详情）才刷新。
 net_exit_refresh() {
-    local j ip city country
+    local j ip city country state
     j=$(curl -s --max-time 8 ipinfo.io 2>/dev/null) || return 1
-    ip=$(printf '%s' "$j" | jq -r '.ip // empty' 2>/dev/null)
+    # 一次 jq 取三个字段。原来对同一份 JSON 调了 4 次 jq，还多取一个 org ——
+    # 那个 org 存进缓存又读出来，可消费端只读前三行，一路白走
+    { read -r ip; read -r city; read -r country; } < <(
+        printf '%s' "$j" | jq -r '.ip // "", .city // "", .country // ""' 2>/dev/null
+    )
     [ -n "$ip" ] || return 1
-    city=$(printf '%s' "$j" | jq -r '.city // empty' 2>/dev/null)
-    country=$(printf '%s' "$j" | jq -r '.country // empty' 2>/dev/null)
-    local org
-    org=$(printf '%s' "$j" | jq -r '.org // empty' 2>/dev/null)
-    local state
     svc_is_active && state=active || state=inactive
-    # org 追加在末尾，这样旧的四字段缓存仍能正确解析（org 为空）
-    printf '%s|%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" "$org" >"$SBS_IPCACHE"
+    printf '%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" >"$SBS_IPCACHE"
 }
 
-# 输出三段：IP、地点、年龄描述
+# 输出三行：IP、地点、年龄描述
 net_exit_cached() {
     [ -f "$SBS_IPCACHE" ] || return 1
-    local ip loc ts st org cur age
-    IFS='|' read -r ip loc ts st org <"$SBS_IPCACHE" || return 1
+    local ip loc ts st cur age
+    # 末尾多接一个 _ ：早先的缓存文件是五段（多一个 org，后来发现从没被用过）。
+    # 不接的话 read 会把剩下的全部塞进 st，状态比对就永远不相等
+    IFS='|' read -r ip loc ts st _ <"$SBS_IPCACHE" || return 1
     [ -n "$ip" ] || return 1
     svc_is_active && cur=active || cur=inactive
     # 缓存记录的服务状态与当前不符 -> 这条出口信息已经不作数，标成 stale。
     # 这是比「停止时刷新」更硬的一道保险：刷新可能因为断网失败，而状态比对不会。
     if [ -n "${st:-}" ] && [ "$st" != "$cur" ]; then
-        printf '%s\n%s\nstale\n%s\n' "$ip" "$loc" "${org:-}"
+        printf '%s\n%s\nstale\n' "$ip" "$loc"
         return 0
     fi
     age=$(($(date +%s) - ${ts:-0}))
-    printf '%s\n%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago" "${org:-}"
+    printf '%s\n%s\n%s\n' "$ip" "$loc" "$(fmt_dur "$age") ago"
 }
 
 # ============================================================ L2 内核
@@ -881,8 +881,6 @@ cmd_status() {
 # 成功 -> 自动回菜单，结果留在菜单底部
 # 失败 -> 停在失败那一步，附一句「下一步怎么办」，等按键
 
-TASK_TITLE=""
-TASK_SUB=""
 TASK_NAMES=()
 TASK_STATE=()
 TASK_DETAIL=()
@@ -890,9 +888,10 @@ TASK_RIGHT=()
 TASK_HINT=()   # 失败时的说明行
 TASK_CUR=-1
 
-task_begin() {
-    TASK_TITLE="$1"
-    TASK_SUB="${2:-}"
+# 只收步骤名。原来还吃「标题」「副标题」两个参数存进 TASK_TITLE / TASK_SUB，
+# 但任务视图并进 footer 之后就没有标题行了，那两个全局写了从没被读过 ——
+# 6 个调用点白传两个参数，还得靠 shift 2 2>/dev/null || shift $# 兜着
+task_begin() { # $1.. = 步骤名
     TASK_NAMES=()
     TASK_STATE=()
     TASK_DETAIL=()
@@ -900,7 +899,6 @@ task_begin() {
     TASK_HINT=()
     TASK_CUR=-1
     UI_TICK=0
-    shift 2 2>/dev/null || shift $#
     local n
     for n in "$@"; do
         TASK_NAMES+=("$n")
@@ -1241,7 +1239,7 @@ task_update_config() {
     local sub tmp out had
     menu_resolve_sub || return 0 # 取消不算失败
     sub="$SUB_URL"
-    task_begin "update config" "" fetch validate save
+    task_begin fetch validate save
     tmp="$SBS_WORK_DIR/.config.$$.json"
 
     task_step 0 "$(ui_fit "$sub" 38)"
@@ -1291,7 +1289,7 @@ task_update_config() {
 # ── 任务：更新脚本自身 ──
 task_update_self() {
     local tmpdir stage base ok=0
-    task_begin "update sbs" "" fetch check install
+    task_begin fetch check install
     tmpdir=$(mktemp -d) || {
         task_step 0
         task_fail "no temp dir" "cannot create a temp directory"
@@ -1348,7 +1346,7 @@ menu_remove_flow() {
     ui_choose "remove all?" "no" "yes" || return 1
     [ "$UI_CHOICE" -eq 1 ] || return 1
 
-    task_begin "remove" "" service files script
+    task_begin service files script
     task_step 0
     svc_purge
     task_ok "unit disabled and removed" ""
@@ -1366,14 +1364,14 @@ menu_remove_flow() {
 menu_kernel_flow() {
     local tags stable beta tag url
     core_detect_target >/dev/null 2>&1 || {
-        task_begin "update kernel" "" resolve
+        task_begin resolve
         task_step 0
         task_fail "unsupported arch" "unsupported architecture: $(uname -m)"
         return 1
     }
 
     # 解析版本，spinner 转起来
-    task_begin "update kernel" "" resolve
+    task_begin resolve
     task_step 0 "querying release tags"
     task_capture gh_resolve_tags
     [ $? -eq 130 ] && return 130
@@ -1401,10 +1399,9 @@ menu_kernel_flow() {
 # 与 kern_install 共用同一批原语（kern_extract / kern_selfcheck / kern_replace），
 # 区别只在于「谁来汇报进度」
 task_install_kernel() { # $1=tag $2=下载地址
-    local tag="$1" url="$2" stage tarball src full ok=0 selfcheck cur
-    cur=$(kern_version_short 2>/dev/null) || cur="none"
+    local tag="$1" url="$2" stage tarball src full ok=0 selfcheck
 
-    task_begin "update kernel" "$cur -> ${tag#v}" resolve download verify install
+    task_begin resolve download verify install
     task_step 0 "$SBS_TARGET_SUFFIX"
     task_ok "$SBS_TARGET_SUFFIX" ""
 
@@ -1438,7 +1435,7 @@ task_install_kernel() { # $1=tag $2=下载地址
     done
     if [ "$ok" -ne 1 ]; then
         task_fail "all sources unreachable" \
-            "all download sources are unreachable" "check the network, or pick a mirror:" "  SBS_PROXY=https://ghfast.top sbs update"
+            "all download sources are unreachable" "check the network, or pick a mirror:" "  SBS_PROXY=https://ghfast.top sbs"
         rm -rf "$stage"
         return 1
     fi
@@ -1500,6 +1497,10 @@ hdr_fields() {
 HDR_LINES=''
 ui_menu_header() {
     local before
+    # 服务状态是 header 自己的依赖，放在这里而不是让调用方记得先调 ——
+    # cmd_status 就是漏了这一步，SVC_STATE 停在初始值，status 永远显示 Stopped。
+    # svc_snapshot 自己看 UI_DIRTY，缓存命中时是空操作
+    svc_snapshot
     if [ "$UI_DIRTY" -eq 0 ] && [ -n "$HDR_LINES" ]; then
         UI_BUF+="$HDR_LINES"
         return
@@ -1573,7 +1574,6 @@ _ui_menu_header() {
 
 cli_menu_draw() {
     UI_BODY=5 # 9 个动作：2 列 4 行 + q 单独一行
-    svc_snapshot # 整次重画只查一次服务状态，header 和下面的项都读这份快照
     ui_reset
     ui_menu_header
     ui_sep
