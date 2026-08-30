@@ -99,6 +99,11 @@ fmt_size() {
 #   2. 中文是双宽字符，${#str} 数的是字符数不是列数 —— 所以界面一律用英文
 UI_W=58
 UI_IN=$((UI_W - 2))
+# 两种提示框（ui_choose 选项、ui_input 输入）共用的按键提示。写成常量是因为
+# 标题要按它的宽度来裁 —— 两边各写一份字面量，就会像之前那样只有一处记得裁，
+# 另一处靠 ui_lr 兜底截断，那会掉色而且和提示挤在一起没间距
+UI_HINT="enter ok   esc cancel  "
+UI_HINT_C='' # 带色版，颜色初始化之后才能拼（见 ui_init_charset）
 UI_BODY=8 # 当前视图的 body 行数，由各视图在绘制前设定。
 # 固定行数是为了重绘时框不抖；不同视图行数不同，靠 ui_redraw 的 \e[J 清残留
 
@@ -130,6 +135,7 @@ ui_init_charset() {
     printf -v UI_HBAR '%*s' "$UI_IN" ''
     UI_HBAR="${UI_HBAR// /$UI_H}"
     printf -v UI_SPACES '%*s' "$UI_IN" ''
+    UI_HINT_C="${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
 }
 
 # 终端控制
@@ -1060,14 +1066,12 @@ ui_choose() {
     shift
     local opts=("$@")
     local cur=0 key i lc
-    local hint="enter ok   esc cancel  "
-    # 标题超长会把提示挤出框外。ui_lr 遇到负 padding 只是钳到 0，行照样变长、
-    # 框照样破，所以在这里先裁进可用宽度
-    title=$(ui_fit "$title" $((UI_IN - ${#hint} - 4)))
+    # 标题超长会把提示挤出框外，先裁进可用宽度。-4 = 2 格左缩进 + 2 格间距，
+    # 不留间距就挤成「...enter ok」
+    title=$(ui_fit "$title" $((UI_IN - ${#UI_HINT} - 4)))
     while true; do
         foot_reset
-        foot_add "$C_DIM  $title$C_RESET" \
-            "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
+        foot_add "$C_DIM  $title$C_RESET" "$UI_HINT_C"
         # 每个选项前留一格给三角标记，未选中时留空 —— 这样切换时文字不会左右跳
         lc="   "
         for i in "${!opts[@]}"; do
@@ -1115,11 +1119,14 @@ ui_choose() {
 # 接着等）。更糟的是连按几次 esc 之后，回车会被当成 M-RET 一并吃掉，人就
 # 卡在输入框里出不来了。
 ui_input() { # $1=标题 $2=预填值 $3=可选提示，敲第一个键就让位给标题
-    local title="$1" val="$2" note="${3:-}" disp k
+    local title="$1" val="$2" note="${3:-}" disp k max
+    # 和 ui_choose 同样的裁剪。循环外做一次，别每敲一个键 fork 一回
+    max=$((UI_IN - ${#UI_HINT} - 4))
+    title=$(ui_fit "$title" "$max")
+    [ -n "$note" ] && note=$(ui_fit "$note" "$max")
     while true; do
         foot_reset
-        foot_add "$C_DIM  ${note:-$title}$C_RESET" \
-            "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
+        foot_add "$C_DIM  ${note:-$title}$C_RESET" "$UI_HINT_C"
         # 地址通常比框还长，看尾巴 —— 那才是正在敲的一头
         disp="$val"
         [ "${#disp}" -gt 50 ] && disp="...${val: -47}"
