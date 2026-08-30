@@ -67,7 +67,6 @@ ui_init_colors() {
 core_info() { printf '%s\n' "${C_GREEN}[info]:${C_RESET} $*" >&2; }
 core_warn() { printf '%s\n' "${C_YELLOW}[warn]:${C_RESET} $*" >&2; }
 core_error() { printf '%s\n' "${C_RED}[error]:${C_RESET} $*" >&2; }
-core_prompt() { printf '%s\n' "${C_CYAN}[prompt]:${C_RESET} $*" >&2; }
 # 致命错误。只在 L3/L4 使用；L1/L2 一律 return 1，把是否终止的决定权交给上层
 die() {
     core_error "$*"
@@ -146,13 +145,6 @@ UI_BUF=""
 ui_reset() { UI_BUF=""; }
 ui_add() { UI_BUF+="$1"$'\n'; }
 
-# ── 绘制原语。一律写入帧缓冲，由 ui_out / ui_redraw 统一输出 ──
-ui_bar() {
-    local n=$1
-    local t
-    printf -v t '%*s' "$n" ''
-    printf '%s' "${t// /$UI_H}"
-}
 # 这四个每帧都要画，原来每个都套着 $(printf ...) 甚至嵌一层 $(ui_bar ...)。
 # 命令替换要 fork，实测 517us 一次，而 printf -v 只要 3.4us —— 差 150 倍。
 # 横线和整行空白是常量，开头生成一次就够（见 ui_init_charset）。
@@ -206,16 +198,6 @@ ui_lr() { # $1=左 $2=右，都可带色
     local line
     printf -v line '%s%s%*s%s%s' "$UI_V" "$1" "$pad" '' "$2" "$UI_V"
     ui_add "$line"
-}
-
-# 分区标题嵌在边线上：├─ service ────┤
-ui_sec() {
-    local t="$1"
-    local lc="${2:-$UI_ML}"
-    local rc="${3:-$UI_MR}"
-    local n=$((UI_IN - ${#t} - 3))
-    [ "$n" -lt 0 ] && n=0
-    ui_add "$(printf '%s%s %s%s%s %s%s' "$lc" "$UI_H" "$C_DIM" "$t" "$C_RESET" "$(ui_bar $n)" "$rc")"
 }
 
 # 值太长时截断，保证不撑破框
@@ -296,7 +278,6 @@ foot_reset() { FOOT_L=() FOOT_R=(); }
 foot_add() { # $1=左 $2=右，都可带色
     FOOT_L+=("$1") FOOT_R+=("${2:-}")
 }
-foot_rows() { printf '%s' "${#FOOT_L[@]}"; }
 
 # 读一个键，方向键与回车归一化成名字
 # 读一个键，结果写进 UI_KEY。刻意不做成 $(ui_read_key) —— 命令替换是子 shell，
@@ -430,22 +411,6 @@ src_remember() { printf '%s\n' "$1" >"$SBS_LAST_SOURCE" 2>/dev/null; }
 # 只有失败才换源，慢不换。曾经考虑过用 --speed-limit 把「慢」也判成失败，
 # 但那样末位源一旦触发就等于什么都拿不到（慢总比没有强），而且网络抖动会误伤。
 
-# 取回 release 资产（大文件，带进度条，源需要 URL 前缀拼接）
-sb_fetch() { # $1=目标文件 $2=原始 URL
-    local dst="$1" url="$2" src full
-    for src in $(src_kernel | awk '!seen[$0]++'); do
-        if [ "$src" = direct ]; then full="$url"; else full="$src/$url"; fi
-        core_info "source: $src"
-        if curl -fL --connect-timeout 5 --retry 2 --progress-bar -o "$dst" "$full"; then
-            src_remember "$src"
-            return 0
-        fi
-        core_warn "$src 失败，试下一个"
-    done
-    core_error "所有源都失败。可用 SBS_PROXY=<base-url> 手动指定"
-    return 1
-}
-
 # 取回仓库内文件（小文件，源是完整 base URL）
 script_fetch() { # $1=本地目标路径 $2=远端文件名
     local dst="$1" name="$2" base
@@ -497,17 +462,6 @@ gh_pick_beta() { grep -- '-beta' | head -n 1; }
 # 按命名规则拼出下载地址。stable 与 beta 规则一致，已验证
 gh_asset_url() { # $1=tag
     printf '%s\n' "https://github.com/$SBS_UPSTREAM/releases/download/$1/sing-box-${1#v}-${SBS_TARGET_SUFFIX}"
-}
-
-# 0=存在 1=确认不存在 2=判定不了（网络问题，交给 sb_fetch 兜底）
-gh_verify_asset() { # $1=url
-    local code
-    code=$(curl -sI -o /dev/null -w '%{http_code}' -L --connect-timeout 5 --max-time 20 "$1" 2>/dev/null)
-    case "$code" in
-    200) return 0 ;;
-    404) return 1 ;;
-    *) return 2 ;;
-    esac
 }
 
 # 输出两行：稳定版 tag、beta tag（beta 可能为空行）
@@ -633,37 +587,6 @@ kern_stage_new() {
     printf '%s\n' "$d"
 }
 
-# 非交互路径（CLI / 非 tty）。交互路径见 task_install_kernel
-kern_install() { # $1=下载地址
-    local url="$1" stage tarball selfcheck
-    stage=$(kern_stage_new) || {
-        core_error "无法创建临时目录"
-        return 1
-    }
-    tarball="$stage/sing-box.tar.gz"
-
-    core_info "downloading sing-box."
-    sb_fetch "$tarball" "$url" || { rm -rf "$stage"; return 1; }
-    kern_extract "$stage" "$tarball" || {
-        core_error "解压失败或包内没有 sing-box"
-        rm -rf "$stage"
-        return 1
-    }
-    selfcheck=$(kern_selfcheck "$stage") || {
-        core_error "新二进制无法运行，保留原有版本。输出：$selfcheck"
-        rm -rf "$stage"
-        return 1
-    }
-    core_info "self-check ok: $selfcheck"
-    kern_replace "$stage" || {
-        core_error "替换失败，保留原有版本"
-        rm -rf "$stage"
-        return 1
-    }
-    rm -rf "$stage"
-    core_info "sing-box installed to $SBS_BIN"
-}
-
 # ============================================================ L2 配置
 cfg_url_get() {
     [ -f "$SBS_SHARE" ] || return 1
@@ -681,12 +604,6 @@ cfg_node_count_of() {
     [ -f "$1" ] || return 1
     jq '[.outbounds[]? | select(.type != "direct" and .type != "block" and .type != "selector" and .type != "urltest")] | length' \
         "$1" 2>/dev/null
-}
-
-cfg_node_count() {
-    [ -f "$SBS_CONFIG" ] || return 1
-    jq '[.outbounds[]? | select(.type != "direct" and .type != "block" and .type != "selector" and .type != "urltest")] | length' \
-        "$SBS_CONFIG" 2>/dev/null
 }
 
 cfg_url_valid() { case "$1" in http://* | https://*) return 0 ;; *) return 1 ;; esac; }
@@ -731,33 +648,6 @@ cfg_commit() { # $1=临时文件
         cp -f "$SBS_CONFIG" "$backup" && printf 'backup\n'
     fi
     mv -f "$1" "$SBS_CONFIG"
-}
-
-# 非交互路径（CLI / 非 tty）
-cfg_fetch() { # $1=订阅地址
-    local url="$1" tmp="$SBS_WORK_DIR/.config.$$.json" out had
-    core_info "fetching config.json"
-    if ! cfg_download "$url" "$tmp"; then
-        core_error "订阅拉取失败，原配置未动"
-        rm -f "$tmp"
-        return 1
-    fi
-    if ! out=$(cfg_validate "$tmp"); then
-        core_error "拉到的配置不合法，原配置未动"
-        printf '%s\n' "$out" >&2
-        rm -f "$tmp"
-        return 1
-    fi
-    had=$(cfg_commit "$tmp") || {
-        core_error "写入配置失败"
-        rm -f "$tmp"
-        return 1
-    }
-    if [ "$had" = backup ]; then
-        core_info "config.json 已更新（上一版备份在 $SBS_CONFIG.backup）"
-    else
-        core_info "config.json 已写入"
-    fi
 }
 
 # ============================================================ L2 服务
@@ -837,79 +727,6 @@ svc_purge() {
     sudo systemctl daemon-reload
 }
 
-# ============================================================ L3 编排（唯一允许交互的一层）
-_ask() { # $1=提示 $2=默认值 —— 回显提示并读一行
-    local reply
-    core_prompt "$1"
-    read -r reply || reply=""
-    printf '%s\n' "${reply:-$2}"
-}
-
-# 解析版本并让用户选档，输出选定的下载地址
-_choose_release() {
-    local tags stable beta pick url
-    tags=$(gh_resolve_tags) || {
-        core_error "无法获取版本列表（github.com 与 jsDelivr 都不可达）"
-        return 1
-    }
-    stable=$(printf '%s\n' "$tags" | sed -n 1p)
-    beta=$(printf '%s\n' "$tags" | sed -n 2p)
-    core_info "latest stable: $stable"
-    core_info "latest beta:   ${beta:-未找到}"
-
-    pick=$(_ask "install stable version? [Y/n]:" y)
-    case "$pick" in
-    [Nn])
-        [ -n "$beta" ] || {
-            core_error "没有找到 beta 版本"
-            return 1
-        }
-        url=$(gh_asset_url "$beta")
-        ;;
-    *) url=$(gh_asset_url "$stable") ;;
-    esac
-
-    gh_verify_asset "$url"
-    case $? in
-    1)
-        core_error "asset 不存在，上游可能改了命名: $url"
-        return 1
-        ;;
-    2) core_warn "无法预检 asset，继续（下载时再判）" ;;
-    esac
-
-    printf '%s\n' "$url"
-}
-
-# 拿到订阅地址：有默认值就问要不要用，没有就直接要
-_resolve_sub_url() {
-    local current="" choice url
-    current=$(cfg_url_get) || current=""
-
-    if [ -n "$current" ]; then
-        core_prompt "当前订阅: $current"
-        choice=$(_ask "沿用这个地址? [Y/n]:" y)
-        case "$choice" in
-        [Nn]) : ;;
-        *)
-            printf '%s\n' "$current"
-            return 0
-            ;;
-        esac
-    else
-        core_prompt "尚未设置订阅地址"
-    fi
-
-    url=$(_ask "请输入订阅地址:" "")
-    cfg_url_valid "$url" || {
-        core_error "订阅地址无效（需要 http:// 或 https:// 开头）"
-        return 1
-    }
-    # 注意这里不落盘。地址要等 cfg_fetch 真的拉到一份合法配置之后才由调用方
-    # 写进 share.txt —— 否则输错一次就把原来能用的地址永久覆盖掉了。
-    printf '%s\n' "$url"
-}
-
 # 进入 / 退出全屏界面会话。命令行直接调 install 时也要用
 ui_session_begin() {
     UI_IN_MENU=1
@@ -920,51 +737,6 @@ ui_session_end() {
     UI_IN_MENU=0
     printf '%s%s' "$UI_SHOW" "$UI_CLS" >&2
     trap - EXIT INT TERM
-}
-
-cmd_install() {
-    # tty 下走任务视图；管道 / 脚本里退回朴素输出
-    if [ -t 0 ] && [ -t 1 ] && [ "$UI_IN_MENU" -eq 0 ]; then
-        local rc
-        ui_session_begin
-        menu_kernel_flow && task_update_config
-        rc=$?
-        ui_session_end
-        return "$rc"
-    fi
-    _cmd_install_plain
-}
-
-_cmd_install_plain() {
-    local url sub
-    core_detect_target || return 1
-    url=$(_choose_release) || return 1
-    kern_install "$url" || return 1
-    svc_write_unit || return 1
-    sub=$(_resolve_sub_url) || return 1
-    cfg_fetch "$sub" || return 1
-    cfg_url_set "$sub"
-    core_info "安装完成。用 'sbs start' 启动"
-}
-
-cmd_update_kernel() {
-    local url
-    core_detect_target || return 1
-    kern_version >/dev/null && core_info "当前: $(kern_version)"
-    url=$(_choose_release) || return 1
-    kern_install "$url" || return 1
-    svc_write_unit || return 1
-    svc_is_active && core_warn "服务正在运行，新内核需 'sbs stop && sbs start' 后生效"
-    return 0
-}
-
-cmd_update_config() {
-    local sub
-    sub=$(_resolve_sub_url) || return 1
-    cfg_fetch "$sub" || return 1
-    cfg_url_set "$sub"
-    svc_is_active && core_warn "服务正在运行，新配置需 'sbs stop && sbs start' 后生效"
-    return 0
 }
 
 # 这两个不能是 local：trap 在函数返回之后才执行，那时 local 已销毁，
@@ -1045,24 +817,6 @@ cmd_status() {
     return 0
 }
 
-cmd_remove() {
-    local choice
-    choice=$(_ask "删除 sing-box、配置与本脚本? [y/N]:" N)
-    case "$choice" in
-    [Yy]) : ;;
-    *)
-        # 返回 1 表示「什么都没做」。菜单据此判断是否退出：
-        # 只有真正删干净了才该离开菜单，取消不该
-        core_info "已取消"
-        return 1
-        ;;
-    esac
-    svc_purge
-    sudo rm -rf "$SBS_WORK_DIR"
-    sudo rm -f "$SBS_EXEC"
-    core_info "已全部删除"
-}
-
 # ============================================================ L4 任务视图
 #
 # 一个任务 = 若干步骤。每步有状态（pending / running / ok / fail）、细节、右侧信息。
@@ -1108,7 +862,6 @@ task_step() {
     [ -n "${2:-}" ] && TASK_DETAIL[$1]="$2"
     task_draw
 }
-task_detail() { [ "$TASK_CUR" -ge 0 ] && TASK_DETAIL[$TASK_CUR]="$1"; task_draw; }
 task_ok() {
     [ "$TASK_CUR" -ge 0 ] || return 0
     TASK_STATE[$TASK_CUR]=ok
@@ -1498,6 +1251,9 @@ task_update_config() {
         rm -f "$tmp"
         return 1
     }
+    # 落地成功才记住地址，下次按 c 就能直接沿用。
+    # 这行原来只在 CLI 版里有，菜单版一直漏着 —— 表现是每次都要重新粘贴整条 URL
+    cfg_url_set "$sub"
     task_ok "${had:+backup kept}" ""
     # 步骤全绿本身就是结果，不再另起一行。只在需要重启才生效时补一句
     svc_is_active && {
@@ -1902,15 +1658,17 @@ cli_menu() {
 cli_help() {
     cat <<'USAGE'
 Usage:
-  sbs install         安装 sing-box 内核与配置
-  sbs update          更新内核
-  sbs update config   更新订阅配置
-  sbs update sbs      更新本脚本
+  sbs                 进菜单（下面这些之外的操作都在里面）
   sbs start           启动
   sbs stop            停止
   sbs restart         重启
   sbs status          查看状态
-  sbs remove          卸载全部
+  sbs update sbs      更新本脚本
+
+菜单里的按键:
+  k  安装 / 更新内核     c  更新订阅配置
+  s  启动   x  停止      r  重启   f  刷新
+  d  卸载全部            q  退出
 
 环境变量:
   SBS_PROXY   指定内核下载反代，如 https://gh-proxy.com
@@ -1918,15 +1676,26 @@ Usage:
 USAGE
 }
 
+# 要选版本、填地址的操作只在菜单里做。命令行再实现一套文字问答，等于同一件
+# 事维护两种交互 —— 之前就是这么漂移的：菜单版有三角形选中、esc 取消、地址
+# 非法就地重问，CLI 版一个都没跟上。
+_menu_only() { # $1=菜单里对应的键 $2=中文说明
+    core_error "$2 要选版本/填地址，请跑 sbs 进菜单，按 $1"
+    return 1
+}
+
 cli_dispatch() {
     local cmd="${1:-}" sub="${2:-}"
     case "$cmd" in
-    install) cmd_install ;;
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    restart) cmd_restart ;;
+    status) cmd_status ;;
     update)
         case "$sub" in
-        config) cmd_update_config ;;
         sbs) cmd_update_self ;;
-        "") cmd_update_kernel ;;
+        "") _menu_only k "更新内核" ;;
+        config) _menu_only c "更新配置" ;;
         *)
             core_error "未知子命令: update $sub"
             cli_help
@@ -1934,11 +1703,8 @@ cli_dispatch() {
             ;;
         esac
         ;;
-    start) cmd_start ;;
-    stop) cmd_stop ;;
-    restart) cmd_restart ;;
-    status) cmd_status ;;
-    remove) cmd_remove ;;
+    install) _menu_only k 安装 ;;
+    remove) _menu_only d 卸载 ;;
     help | -h | --help) cli_help ;;
     "")
         # 非 tty（管道、脚本调用）不进菜单，保持可脚本化
