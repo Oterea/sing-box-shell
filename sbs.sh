@@ -149,6 +149,8 @@ UI_SYNC_OFF=$'\e[?2026l'
 
 # 帧缓冲。整帧攒好一次写出 —— 逐行写会让终端边收边画，走 SSH 尤其明显
 UI_BUF=""
+# 终端尺寸。只在进菜单和收到 SIGWINCH 时量 —— tput 是外部命令，不能每帧都问
+UI_COLS=80 UI_LINES=24 UI_WINCH=0
 ui_reset() { UI_BUF=""; }
 ui_add() { UI_BUF+="$1"$'\n'; }
 
@@ -265,14 +267,48 @@ ui_out() {
 # 动画重绘：光标归位 + 同步输出，不清屏（清屏会闪）。
 # 走 stderr —— 这是「画屏幕」不是「输出数据」。若走 stdout，
 # key=$(ui_choose ...) 这类命令替换会把整个界面吞进变量，屏幕上什么都不显示。
+# 用 stty 而不是 tput。ncurses 的 setupterm 会优先信 $LINES / $COLUMNS 这两个
+# 环境变量，而它们是进程启动时的快照 —— 窗口拖动之后 tput 报的还是老尺寸。
+# 实测：真实 50x40 时 tput 仍然说 100x40，stty size 说的是 40 50。
+# stty size 直接走 TIOCGWINSZ，问的是内核里的真值。
+ui_measure() {
+    local sz
+    sz=$(stty size 2>/dev/null </dev/tty) || sz=""
+    case "$sz" in
+    *[0-9]" "*[0-9])
+        UI_LINES=${sz%% *}
+        UI_COLS=${sz##* }
+        ;;
+    *)
+        UI_COLS=$(tput cols 2>/dev/null) || UI_COLS=80
+        UI_LINES=$(tput lines 2>/dev/null) || UI_LINES=24
+        ;;
+    esac
+    [ "${UI_COLS:-0}" -gt 0 ] 2>/dev/null || UI_COLS=80
+    [ "${UI_LINES:-0}" -gt 0 ] 2>/dev/null || UI_LINES=24
+}
+
 ui_redraw() {
-    # 每行末尾补 \e[K 清到行尾。下载时 eta 会从 "eta 1h 20m" 缩到 "eta 0s"，
-    # 行一变短，旧帧右边多出来的字符就原地留着 —— 看起来就是框的右边线旁边
-    # 又多一根竖线。\e[J 只清光标之后的整屏，管不到每一行各自的行尾。
-    #
-    # \e[J 仍然要留：上一帧若更高（任务 8 行 -> 菜单 4 行），多出来的整行
-    # 得抹掉，否则会挂在框下面
-    local nl=$'\n' k=$'\e[K' buf="${UI_BUF%$'\n'}"
+    local nl=$'\n' k=$'\e[K' buf="${UI_BUF%$'\n'}" nls rows
+    # 窗口被拖动过：终端已经把旧内容按新尺寸重排了一遍，\e[H 之后逐行覆盖
+    # 盖不干净，只能整屏清掉重来
+    if [ "$UI_WINCH" -eq 1 ]; then
+        UI_WINCH=0
+        ui_measure
+        printf '%s' "$UI_CLS" >&2
+    fi
+    # 放不下就别画框。窄于 58 时每行折成两行，13 行的帧占满 26 行，和残留
+    # 叠在一起就是一屏碎片；比屏幕高则顶部滚出去，而 \e[H 回的是屏幕顶不是
+    # 帧的起点，越画越错位
+    nls="${buf//[!$nl]/}"
+    rows=$((${#nls} + 1))
+    if [ "$UI_COLS" -lt "$UI_W" ] || [ "$rows" -gt "$UI_LINES" ]; then
+        printf '%s%s  sbs: 窗口至少要 %s x %s，当前 %s x %s\e[K\e[J%s' \
+            "$UI_SYNC_ON" "$UI_HOME" "$UI_W" "$rows" "$UI_COLS" "$UI_LINES" "$UI_SYNC_OFF" >&2
+        return
+    fi
+    # 每行末尾补 \e[K 清到行尾：上一帧若更宽，右边多出来的字符会原地留着。
+    # \e[J 清光标之后的整屏 —— 上一帧若更高，多出来的整行靠它抹掉
     printf '%s%s%s\e[K\e[J%s' "$UI_SYNC_ON" "$UI_HOME" "${buf//$nl/$k$nl}" "$UI_SYNC_OFF" >&2
 }
 
@@ -299,6 +335,11 @@ ui_read_key() {
         k=${UI_PENDING:0:1}
         UI_PENDING=${UI_PENDING:1}
     elif ! IFS= read -rsn1 k 2>/dev/null; then
+        # 窗口尺寸变化会用信号打断 read，那不是按了 esc
+        if [ "$UI_WINCH" -eq 1 ]; then
+            UI_KEY=winch
+            return
+        fi
         UI_KEY=esc
         return
     fi
@@ -822,13 +863,16 @@ svc_purge() {
 # 进入 / 退出全屏界面会话。命令行直接调 install 时也要用
 ui_session_begin() {
     UI_IN_MENU=1
+    UI_WINCH=0
+    ui_measure
     printf '%s%s' "$UI_CLS" "$UI_HIDE" >&2
     trap 'UI_IN_MENU=0; printf "%s" "$UI_SHOW" >&2' EXIT INT TERM
+    trap 'UI_WINCH=1' WINCH
 }
 ui_session_end() {
     UI_IN_MENU=0
     printf '%s%s' "$UI_SHOW" "$UI_CLS" >&2
-    trap - EXIT INT TERM
+    trap - EXIT INT TERM WINCH
 }
 
 # 这两个不能是 local：trap 在函数返回之后才执行，那时 local 已销毁，
@@ -897,9 +941,8 @@ cmd_restart() {
 # 面板宽度不够时退回 systemctl 原始输出。
 # 命令行下的 sbs status：就是菜单那个框，body 空着
 cmd_status() {
-    local cols
-    cols=$(tput cols 2>/dev/null || echo 80)
-    if [ "$cols" -lt "$UI_W" ]; then
+    ui_measure
+    if [ "$UI_COLS" -lt "$UI_W" ]; then
         svc_status
         return 0
     fi
@@ -1205,7 +1248,7 @@ ui_input() { # $1=标题 $2=预填值 $3=可选提示，敲第一个键就让位
             foot_add "$C_DIM  cancelled$C_RESET" ""
             return 1
             ;;
-        left | right | up | down) continue ;;
+        left | right | up | down | winch) continue ;;
         $'\177' | $'\b') val="${val%?}" ;;
         $'\025') val="" ;; # Ctrl-U 清空
         *) val="$val$UI_KEY" ;;
@@ -1681,16 +1724,15 @@ cli_menu_draw() {
 
 cli_menu() {
     # 终端太窄画框会折行，比没框还难看；直接退回帮助
-    local cols
-    cols=$(tput cols 2>/dev/null || echo 80)
-    if [ "$cols" -lt "$UI_W" ]; then
-        core_warn "终端宽度 $cols 小于 $UI_W，改用命令行模式"
+    if [ "$UI_COLS" -lt "$UI_W" ]; then
+        core_warn "终端宽度 $UI_COLS 小于 $UI_W，改用命令行模式"
         cli_help
         return 0
     fi
 
     local key rc
     core_check_sudo || return 1
+    ui_measure
     # 无论怎么退出（正常 / Ctrl-C / 报错）都要把光标恢复出来
     ui_session_begin
     while true; do
