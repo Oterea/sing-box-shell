@@ -1199,9 +1199,9 @@ ui_choose() {
     local cur=0 key i lp lc
     while true; do
         foot_reset
-        foot_add "  $title" "< > select   enter ok   esc cancel  " \
+        foot_add "  $title" "enter ok   esc cancel  " \
             "$C_DIM  $title$C_RESET" \
-            "$C_DIM< >$C_RESET select   ${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
+            "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
         # 每个选项前留一格给三角标记，未选中时留空 —— 这样切换时文字不会左右跳
         lp="   " lc="   "
         for i in "${!opts[@]}"; do
