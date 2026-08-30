@@ -751,12 +751,14 @@ now_mono_us() {
 # header 每次重画都要服务状态，原先分成 is-active + is-failed + show NRestarts
 # + uptime(3 个 fork) 共 5 次 systemctl。这里一次 show 全取回来放进全局。
 SVC_STATE=inactive SVC_NRESTARTS=0 SVC_UPTIME_S=-1
-SVC_TICK=''
+# 面板是「快照」不是「实时」：只在进入菜单、跑完一个动作、按 f 之后才重查。
+# 中间不管重画多少次（选择框、输入框、spinner 每秒十几帧）都复用上一次的
+# 结果 —— 那些重查全是 systemctl / stat / ip 的 fork。
+# 由 ui_menu_header 在重建完之后清零。
+UI_DIRTY=1
 svc_snapshot() {
     local k v mono=0
-    # 同 header：一秒查一次够了，spinner 一秒转十来拍不该跟着查十来次 systemctl
-    [ "$SVC_TICK" = "$SECONDS" ] && return 0
-    SVC_TICK=$SECONDS
+    [ "$UI_DIRTY" -eq 0 ] && return 0
     SVC_STATE=inactive SVC_NRESTARTS=0 SVC_UPTIME_S=-1
     while IFS='=' read -r k v; do
         case "$k" in
@@ -1495,17 +1497,17 @@ hdr_fields() {
 # header 那三四行每秒要重建十来次，内容却以秒为单位才变（uptime、ago）。
 # 按秒缓存渲染好的字符串：spinner 照转，systemctl / ip / stat 的 fork 全省。
 # 用户一按键就作废（见 cli_menu），所以动作后的状态不会显示滞后。
-HDR_LINES='' HDR_TICK=''
+HDR_LINES=''
 ui_menu_header() {
-    local key="$SECONDS" before
-    if [ "$key" = "$HDR_TICK" ]; then
+    local before
+    if [ "$UI_DIRTY" -eq 0 ] && [ -n "$HDR_LINES" ]; then
         UI_BUF+="$HDR_LINES"
         return
     fi
     before="$UI_BUF"
     _ui_menu_header
     HDR_LINES="${UI_BUF#"$before"}"
-    HDR_TICK="$key"
+    UI_DIRTY=0
 }
 
 _ui_menu_header() {
@@ -1632,9 +1634,18 @@ cli_menu() {
         cli_menu_draw
         ui_read_key
         key=$UI_KEY
-        # 按了键就作废按秒缓存 —— 动作会改变服务状态，不能等到下一秒才显示
-        HDR_TICK='' SVC_TICK=''
-        # 上一个动作的结果显示到下次按键为止
+        # 不认识的键（回车之类）什么都不做：不清上一次的结果，也不刷新面板。
+        # 刷新是 f 的事，不该再有一条隐式的路 —— 之前任何按键都会强制重查，
+        # 于是敲个回车 uptime 就跳一下，看着像面板在自己动
+        case "$key" in
+        q)
+            ui_session_end
+            return 0
+            ;;
+        s | x | r | k | c | u | d | f) ;;
+        *) continue ;;
+        esac
+        # 上一个动作的结果显示到下次「有效」按键为止
         foot_reset
         case "$key" in
         s) menu_quick cmd_start "started" "start" ;;
@@ -1671,12 +1682,9 @@ cli_menu() {
             *) foot_add "$C_YELLOW  exit ip unavailable$C_RESET" "" ;;
             esac
             ;;
-        q)
-            ui_session_end
-            return 0
-            ;;
-        *) : ;;
         esac
+        # 动作跑完了，面板要反映新状态
+        UI_DIRTY=1
     done
 }
 
