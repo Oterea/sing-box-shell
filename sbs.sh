@@ -144,6 +144,17 @@ UI_HIDE=$'\e[?25l'
 UI_SHOW=$'\e[?25h'
 UI_HOME=$'\e[H'
 UI_CLS=$'\e[2J\e[H'
+# 备用屏幕缓冲区。菜单画在自己的一块画布上，不和之前敲的命令、滚动历史共用
+# —— 主屏幕上只要有任何东西让它滚一行，\e[H 回的「屏幕顶部」就不再是帧的
+# 起点，之后每重画一次错位一点，越积越乱。退出时原样还回去，历史一行不丢。
+# 老终端不认这两个序列会直接忽略，不会出乱码。
+UI_ALT_ON=$'\e[?1049h'
+UI_ALT_OFF=$'\e[?1049l'
+# 界面独占一个 fd。信号 trap 可能在别的命令的重定向还生效时被执行 —— 实测
+# SIGINT 打断 ui_read_key 里的 `read ... 2>/dev/null` 时，trap 里的 >&2 就写
+# 进了 /dev/null，还原备用屏的序列凭空消失，用户停在一块空白画布上。
+# 进菜单时复制一份 stderr 到自己的 fd，之后画屏和还原都只认它。
+UI_FD=2
 UI_SYNC_ON=$'\e[?2026h'  # 同步输出：终端攒够一帧再显示，不支持的会忽略
 UI_SYNC_OFF=$'\e[?2026l'
 
@@ -295,7 +306,7 @@ ui_redraw() {
     if [ "$UI_WINCH" -eq 1 ]; then
         UI_WINCH=0
         ui_measure
-        printf '%s' "$UI_CLS" >&2
+        printf '%s' "$UI_CLS" >&$UI_FD
     fi
     # 放不下就别画框。窄于 58 时每行折成两行，13 行的帧占满 26 行，和残留
     # 叠在一起就是一屏碎片；比屏幕高则顶部滚出去，而 \e[H 回的是屏幕顶不是
@@ -304,12 +315,12 @@ ui_redraw() {
     rows=$((${#nls} + 1))
     if [ "$UI_COLS" -lt "$UI_W" ] || [ "$rows" -gt "$UI_LINES" ]; then
         printf '%s%s  sbs: 窗口至少要 %s x %s，当前 %s x %s\e[K\e[J%s' \
-            "$UI_SYNC_ON" "$UI_HOME" "$UI_W" "$rows" "$UI_COLS" "$UI_LINES" "$UI_SYNC_OFF" >&2
+            "$UI_SYNC_ON" "$UI_HOME" "$UI_W" "$rows" "$UI_COLS" "$UI_LINES" "$UI_SYNC_OFF" >&$UI_FD
         return
     fi
     # 每行末尾补 \e[K 清到行尾：上一帧若更宽，右边多出来的字符会原地留着。
     # \e[J 清光标之后的整屏 —— 上一帧若更高，多出来的整行靠它抹掉
-    printf '%s%s%s\e[K\e[J%s' "$UI_SYNC_ON" "$UI_HOME" "${buf//$nl/$k$nl}" "$UI_SYNC_OFF" >&2
+    printf '%s%s%s\e[K\e[J%s' "$UI_SYNC_ON" "$UI_HOME" "${buf//$nl/$k$nl}" "$UI_SYNC_OFF" >&$UI_FD
 }
 
 # ── footer 区 ──
@@ -865,14 +876,23 @@ ui_session_begin() {
     UI_IN_MENU=1
     UI_WINCH=0
     ui_measure
-    printf '%s%s' "$UI_CLS" "$UI_HIDE" >&2
-    trap 'UI_IN_MENU=0; printf "%s" "$UI_SHOW" >&2' EXIT INT TERM
+    exec {UI_FD}>&2 # 复制一份 stderr 归界面专用
+    printf '%s%s%s' "$UI_ALT_ON" "$UI_CLS" "$UI_HIDE" >&$UI_FD
+    # 异常退出也必须把备用屏幕还回去，否则用户停在一块空白画布上。
+    # EXIT 管正常返回和脚本出错；INT / TERM 单独一条，因为 trap 只是执行
+    # 完继续往下跑 —— 被 kill -INT 之后还留在循环里接着画，反而更乱，
+    # 所以还原完直接退出
+    trap 'UI_IN_MENU=0; printf "%s%s" "$UI_SHOW" "$UI_ALT_OFF" >&$UI_FD' EXIT
+    trap 'ui_session_end; exit 130' INT TERM
     trap 'UI_WINCH=1' WINCH
 }
 ui_session_end() {
     UI_IN_MENU=0
-    printf '%s%s' "$UI_SHOW" "$UI_CLS" >&2
+    printf '%s%s' "$UI_SHOW" "$UI_ALT_OFF" >&$UI_FD
     trap - EXIT INT TERM WINCH
+    [ "$UI_FD" -ne 2 ] && exec {UI_FD}>&-
+    UI_FD=2
+    return 0
 }
 
 # 这两个不能是 local：trap 在函数返回之后才执行，那时 local 已销毁，
