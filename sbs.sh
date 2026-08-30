@@ -109,7 +109,7 @@ UI_BODY=8 # 当前视图的 body 行数，由各视图在绘制前设定。
 # 另外 SBS_ASCII=1 可手动强制。
 # 注：制表符 ─ │ ╭ 等是「东亚歧义宽度」，终端若把歧义当双宽，框会烂；
 # 而 ✓ (U+2713) / ✗ (U+2717) 是 Neutral，恒占 1 列，比框线本身更安全。
-# 选中标记用 ► (U+25BA)：Neutral 宽度且不在 emoji 集里。看着更像样的
+# 选中标记用 ➤ (U+27A4)：Neutral 宽度且不在 emoji 集里。看着更像样的
 # ▶ (U+25B6) 反而是最差的选择 —— 它既是歧义宽度，又带 Emoji=Yes 属性，
 # 部分终端会给它 emoji 呈现，直接变成彩色双宽方块把框撑破。
 ui_init_charset() {
@@ -123,7 +123,7 @@ ui_init_charset() {
         UI_OK='+' UI_BAD='x' UI_DOT='*' UI_SEL='>'
     else
         UI_H='─' UI_V='│' UI_TL='╭' UI_TR='╮' UI_BL='╰' UI_BR='╯' UI_ML='├' UI_MR='┤'
-        UI_OK='✓' UI_BAD='✗' UI_DOT='●' UI_SEL='►'
+        UI_OK='✓' UI_BAD='✗' UI_DOT='●' UI_SEL='➤'
     fi
     UI_SPIN=('|' '/' '-' $'\\')
 }
@@ -246,34 +246,56 @@ foot_add() { # $1=纯左 $2=纯右 $3=带色左 $4=带色右
 foot_rows() { printf '%s' "${#FOOT_L[@]}"; }
 
 # 读一个键，方向键与回车归一化成名字
+# 读一个键，结果写进 UI_KEY。刻意不做成 $(ui_read_key) —— 命令替换是子 shell，
+# UI_PENDING 回推缓冲存不下来，而且每次按键白搭一个 fork。
+UI_KEY='' UI_PENDING=''
 ui_read_key() {
     local k rest
-    IFS= read -rsn1 k 2>/dev/null || {
-        printf 'esc'
+    if [ -n "$UI_PENDING" ]; then
+        k=${UI_PENDING:0:1}
+        UI_PENDING=${UI_PENDING:1}
+    elif ! IFS= read -rsn1 k 2>/dev/null; then
+        UI_KEY=esc
         return
-    }
+    fi
     case "$k" in
     '')
-        printf 'enter'
+        UI_KEY=enter
         return
         ;;
     $'\e')
-        # 可能是方向键的转义序列。短超时读后续字节：读不到就是裸 esc
-        IFS= read -rsn2 -t 0.05 rest 2>/dev/null || {
-            printf 'esc'
+        # 逐字节前探，绝不能一次吞 2 个。原来用 read -rsn2 的写法，连按两次
+        # esc 时第二个 esc 会被当成转义序列的一部分吃掉 —— 实测连按 3 下也
+        # 只产生 1 个 esc 事件，正是「按了没反应、得按两次」的由来。
+        IFS= read -rsn1 -t 0.05 rest 2>/dev/null || {
+            UI_KEY=esc
             return
         }
         case "$rest" in
-        '[A') printf 'up' ;;
-        '[B') printf 'down' ;;
-        '[C') printf 'right' ;;
-        '[D') printf 'left' ;;
-        *) printf 'esc' ;;
+        '[' | O) ;;
+        *)
+            # 不是转义序列的引导字符，说明这是个裸 esc。多读的那个字节不能
+            # 丢，回推给下一次调用
+            UI_PENDING="$rest$UI_PENDING"
+            UI_KEY=esc
+            return
+            ;;
+        esac
+        IFS= read -rsn1 -t 0.05 rest 2>/dev/null || {
+            UI_KEY=esc
+            return
+        }
+        case "$rest" in
+        A) UI_KEY=up ;;
+        B) UI_KEY=down ;;
+        C) UI_KEY=right ;;
+        D) UI_KEY=left ;;
+        *) UI_KEY=esc ;;
         esac
         return
         ;;
     esac
-    printf '%s' "$k"
+    UI_KEY=$k
 }
 
 # ============================================================ L0 环境
@@ -722,26 +744,35 @@ svc_stop() { sudo systemctl stop "$SBS_UNIT_NAME"; }
 svc_status() { sudo systemctl status "$SBS_UNIT_NAME" --no-pager; }
 svc_restart() { sudo systemctl restart "$SBS_UNIT_NAME"; }
 
-# 运行时长（秒）。用 monotonic 时间戳比解析日期稳
-svc_uptime_sec() {
-    local mono now
-    mono=$(svc_prop ActiveEnterTimestampMonotonic)
-    [ -n "$mono" ] && [ "$mono" != 0 ] || return 1
-    svc_is_active || return 1
-    now=$(awk '{printf "%d", $1 * 1000000}' /proc/uptime)
-    printf '%s\n' $(((now - mono) / 1000000))
-}
 svc_is_active() { systemctl is-active --quiet "$SBS_UNIT_NAME"; }
 
-# 读一个 systemd 属性
-svc_prop() { systemctl show "$SBS_UNIT_NAME" -p "$1" --value 2>/dev/null; }
-
-# 运行时长的可读形式，没在跑就返回空
-svc_uptime_str() {
-    local t
-    t=$(svc_uptime_sec 2>/dev/null) || return 0
-    fmt_dur "$t"
+# /proc/uptime 转微秒，纯 bash 不 fork（原来这里要起一个 awk）
+now_mono_us() {
+    local up rest f
+    read -r up rest </proc/uptime || return 1
+    f="${up#*.}000000"
+    printf '%s' $((${up%%.*} * 1000000 + 10#${f:0:6}))
 }
+
+# header 每次重画都要服务状态，原先分成 is-active + is-failed + show NRestarts
+# + uptime(3 个 fork) 共 5 次 systemctl。这里一次 show 全取回来放进全局。
+SVC_STATE=inactive SVC_NRESTARTS=0 SVC_UPTIME_S=-1
+svc_snapshot() {
+    local k v mono=0
+    SVC_STATE=inactive SVC_NRESTARTS=0 SVC_UPTIME_S=-1
+    while IFS='=' read -r k v; do
+        case "$k" in
+        ActiveState) SVC_STATE="$v" ;;
+        NRestarts) SVC_NRESTARTS="$v" ;;
+        ActiveEnterTimestampMonotonic) mono="$v" ;;
+        esac
+    done < <(systemctl show "$SBS_UNIT_NAME" \
+        -p ActiveState -p NRestarts -p ActiveEnterTimestampMonotonic 2>/dev/null)
+    if [ "$SVC_STATE" = active ] && [ "${mono:-0}" -gt 0 ] 2>/dev/null; then
+        SVC_UPTIME_S=$((($(now_mono_us) - mono) / 1000000))
+    fi
+}
+
 svc_purge() {
     sudo systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
     sudo systemctl stop "$SBS_UNIT_NAME" >/dev/null 2>&1
@@ -826,7 +857,7 @@ _resolve_sub_url() {
 ui_session_begin() {
     UI_IN_MENU=1
     printf '%s%s' "$UI_CLS" "$UI_HIDE" >&2
-    trap 'UI_IN_MENU=0; printf "%s" "$UI_SHOW"' EXIT INT TERM
+    trap 'UI_IN_MENU=0; printf "%s" "$UI_SHOW" >&2' EXIT INT TERM
 }
 ui_session_end() {
     UI_IN_MENU=0
@@ -1039,9 +1070,14 @@ task_fail() {
 
 # 非阻塞探一个键。按下 esc 返回 0，用于中断正在跑的任务
 ui_esc_pressed() {
-    local k
+    local k rest
     read -rsn1 -t 0.001 k 2>/dev/null || return 1
-    [ "$k" = $'\e' ]
+    [ "$k" = $'\e' ] || return 1
+    # 方向键、功能键也都以 \e 开头。后面还跟着字节就是转义序列而不是取消，
+    # 顺手把余下的字节读掉免得漏进下一次探测 —— 否则下载时手滑按个方向键，
+    # 任务直接就没了（实测确实会）
+    read -rsn2 -t 0.05 rest 2>/dev/null && return 1
+    [ -z "$rest" ]
 }
 
 # 后台跑一条命令，同时让 spinner 转起来。返回 130 表示用户按 esc 取消
@@ -1184,7 +1220,8 @@ ui_choose() {
         done
         foot_add "$lp" "" "$lc" ""
         cli_menu_draw
-        key=$(ui_read_key)
+        ui_read_key
+        key=$UI_KEY
         case "$key" in
         left | up) cur=$(((cur - 1 + ${#opts[@]}) % ${#opts[@]})) ;;
         right | down) cur=$(((cur + 1) % ${#opts[@]})) ;;
@@ -1489,25 +1526,49 @@ task_install_kernel() { # $1=tag $2=下载地址
 
 # ============================================================ L4 菜单
 # header 三行 + 分隔线。菜单和任务视图共用 —— 长任务进行时也能看到服务状态
+# sing-box version(53ms) 和 sing-box check(100ms) 占了一次重画 222ms 里的七成，
+# 而它们只在内核或配置文件变了之后才会变。拿 mtime:size 当键缓存，一次 stat
+# 两个文件只要一个 fork。
+HDR_KEY='' HDR_VER='' HDR_CFG=''
+hdr_fields() {
+    local key
+    key=$(stat -c '%Y:%s' "$SBS_BIN" "$SBS_CONFIG" 2>/dev/null | tr '\n' ' ')
+    [ "$key" = "$HDR_KEY" ] && return 0
+    HDR_KEY="$key"
+    HDR_VER=$(kern_version_short 2>/dev/null) || HDR_VER=""
+    if [ ! -f "$SBS_CONFIG" ]; then
+        HDR_CFG=missing
+    elif [ -x "$SBS_BIN" ] && [ -z "$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)" ]; then
+        HDR_CFG=valid
+    else
+        HDR_CFG=invalid
+    fi
+}
+
 ui_menu_header() {
     local state scolor ver tun uptime ip loc age
     local l2p l2c l3p l3c
 
-    if svc_is_active; then
+    case "$SVC_STATE" in
+    active)
         state="Running"
         scolor="$C_GREEN"
-    elif systemctl is-failed --quiet "$SBS_UNIT_NAME" 2>/dev/null; then
+        ;;
+    failed)
         state="Failed"
         scolor="$C_RED"
-    else
+        ;;
+    *)
         state="Stopped"
         scolor="$C_DIM"
-    fi
+        ;;
+    esac
 
-    ver=$(kern_version_short 2>/dev/null) || ver=""
-    [ -n "$ver" ] || ver="not installed"
+    hdr_fields
+    ver="${HDR_VER:-not installed}"
     tun=$(tun_info 2>/dev/null | awk '{print $1" "$2}') || tun=""
-    uptime=$(svc_uptime_str)
+    uptime=""
+    [ "$SVC_UPTIME_S" -ge 0 ] && uptime=$(fmt_dur "$SVC_UPTIME_S")
 
     ui_top
     local title
@@ -1518,17 +1579,12 @@ ui_menu_header() {
     # 配置是否合法挂在第 2 行右角常驻。这是 header 里唯一需要跑一次
     # sing-box check 的字段（306 节点约几十毫秒），值得 —— 光看 RUNNING
     # 看不出配置已经坏了。
-    local valid vcolor
-    if [ ! -f "$SBS_CONFIG" ]; then
-        valid=missing
-        vcolor="$C_YELLOW"
-    elif [ -x "$SBS_BIN" ] && [ -z "$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)" ]; then
-        valid=valid
-        vcolor="$C_GREEN"
-    else
-        valid=invalid
-        vcolor="$C_RED"
-    fi
+    local valid="$HDR_CFG" vcolor
+    case "$valid" in
+    missing) vcolor="$C_YELLOW" ;;
+    valid) vcolor="$C_GREEN" ;;
+    *) vcolor="$C_RED" ;;
+    esac
     printf -v l2p '  %s   %s' "$ver" "${tun:-no tun}"
     l2p=$(ui_fit "$l2p" $((UI_IN - ${#valid} - 10)))
     l2c="$C_DIM$l2p$C_RESET"
@@ -1549,11 +1605,9 @@ ui_menu_header() {
     fi
 
     # 第 4 行只在出问题时出现。restarts 常态为 0，常驻显示纯粹是噪音
-    local nrs
-    nrs=$(svc_prop NRestarts)
-    if [ -n "${nrs:-}" ] && [ "$nrs" -gt 0 ] 2>/dev/null; then
-        ui_lr "  restarted $nrs times - check the logs" "" \
-            "$C_YELLOW  restarted $nrs times - check the logs$C_RESET" ""
+    if [ "${SVC_NRESTARTS:-0}" -gt 0 ] 2>/dev/null; then
+        ui_lr "  restarted $SVC_NRESTARTS times - check the logs" "" \
+            "$C_YELLOW  restarted $SVC_NRESTARTS times - check the logs$C_RESET" ""
     fi
 }
 
@@ -1561,6 +1615,7 @@ UI_REFRESHING=0 # f 键刷新出口 IP 期间置 1，让 header 显示 refreshin
 
 cli_menu_draw() {
     UI_BODY=5 # 9 个动作：2 列 4 行 + q 单独一行
+    svc_snapshot # 整次重画只查一次服务状态，header 和下面的项都读这份快照
     ui_reset
     ui_menu_header
     ui_sep
@@ -1575,7 +1630,7 @@ cli_menu_draw() {
         ui_item x stop "c" "update config" "$C_DIM" "$C_DIM"
         ui_item r restart "u" "update sbs" "$C_DIM" ""
         ui_item f refresh "d" remove "" "$C_DIM"
-    elif svc_is_active; then
+    elif [ "$SVC_STATE" = active ]; then
         ui_item s start "k" "$klabel" "$C_DIM" ""
         ui_item x stop "c" "update config" "" ""
         ui_item r restart "u" "update sbs" "" ""
@@ -1601,12 +1656,6 @@ cli_menu_draw() {
     ui_redraw
 }
 
-u_pause() {
-    echo
-    printf '%s' "${C_DIM}  按任意键返回菜单${C_RESET}"
-    read -rsn1 _ 2>/dev/null || true
-}
-
 cli_menu() {
     # 终端太窄画框会折行，比没框还难看；直接退回帮助
     local cols
@@ -1622,7 +1671,8 @@ cli_menu() {
     ui_session_begin
     while true; do
         cli_menu_draw
-        key=$(ui_read_key)
+        ui_read_key
+        key=$UI_KEY
         # 上一个动作的结果显示到下次按键为止
         foot_reset
         case "$key" in
