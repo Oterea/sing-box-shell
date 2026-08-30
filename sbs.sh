@@ -289,19 +289,15 @@ ui_out() {
 # stty size 直接走 TIOCGWINSZ，问的是内核里的真值。
 ui_measure() {
     local sz
+    # stty size 输出「行 列」两个数
     sz=$(stty size 2>/dev/null </dev/tty) || sz=""
-    case "$sz" in
-    *[0-9]" "*[0-9])
-        UI_LINES=${sz%% *}
-        UI_COLS=${sz##* }
-        ;;
-    *)
-        UI_COLS=$(tput cols 2>/dev/null) || UI_COLS=80
-        UI_LINES=$(tput lines 2>/dev/null) || UI_LINES=24
-        ;;
-    esac
-    [ "${UI_COLS:-0}" -gt 0 ] 2>/dev/null || UI_COLS=80
+    UI_LINES=${sz%% *} UI_COLS=${sz##* }
+    # 拿不到就退回 tput，再拿不到用兜底值。数字校验统一放这里做，
+    # 上面就不必再自己判断格式
+    [ "${UI_LINES:-0}" -gt 0 ] 2>/dev/null || UI_LINES=$(tput lines 2>/dev/null)
+    [ "${UI_COLS:-0}" -gt 0 ] 2>/dev/null || UI_COLS=$(tput cols 2>/dev/null)
     [ "${UI_LINES:-0}" -gt 0 ] 2>/dev/null || UI_LINES=24
+    [ "${UI_COLS:-0}" -gt 0 ] 2>/dev/null || UI_COLS=80
 }
 
 ui_redraw() {
@@ -321,10 +317,12 @@ ui_redraw() {
     # 放不下就别画框。窄于 58 时每行折成两行，13 行的帧占满 26 行，和残留
     # 叠在一起就是一屏碎片；比屏幕高则顶部滚出去，而 \e[H 回的是屏幕顶不是
     # 帧的起点，越画越错位
+    # 数帧有多少行：把非换行的字符全删掉，剩下的长度就是换行数。
+    # 纯参数展开，不 fork —— 这函数每帧都要跑
     nls="${buf//[!$nl]/}"
     rows=$((${#nls} + 1))
     if [ "$UI_COLS" -lt "$UI_W" ] || [ "$rows" -gt "$UI_LINES" ]; then
-        printf '%s%s  sbs: 窗口至少要 %s x %s，当前 %s x %s\e[K\e[J%s' \
+        printf '%s%s  sbs: needs a %s x %s window, this one is %s x %s\e[K\e[J%s' \
             "$UI_SYNC_ON" "$UI_HOME" "$UI_W" "$rows" "$UI_COLS" "$UI_LINES" "$UI_SYNC_OFF" >&$UI_FD
         return
     fi
@@ -893,8 +891,11 @@ ui_session_begin() {
     # EXIT 管正常返回和脚本出错；INT / TERM 单独一条，因为 trap 只是执行
     # 完继续往下跑 —— 被 kill -INT 之后还留在循环里接着画，反而更乱，
     # 所以还原完直接退出
-    trap 'UI_IN_MENU=0; printf "%s%s" "$UI_SHOW" "$UI_ALT_OFF" >&$UI_FD
-          [ -n "$UI_STTY" ] && stty "$UI_STTY" 2>/dev/null </dev/tty' EXIT
+    # 三条 trap 都收敛到 ui_session_end，别各抄一份还原逻辑。
+    # 它自己会清 trap，所以正常退出时不会跑第二遍；重复调用也是幂等的。
+    # INT / TERM 要额外 exit：trap 执行完是接着往下跑的，不退出就还留在
+    # 循环里接着画，比不还原更糟
+    trap ui_session_end EXIT
     trap 'ui_session_end; exit 130' INT TERM
     trap 'UI_WINCH=1' WINCH
 }
