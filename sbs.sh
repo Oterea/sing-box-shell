@@ -137,6 +137,57 @@ ui_init_charset() {
     UI_HBAR="${UI_HBAR// /$UI_H}"
     printf -v UI_SPACES '%*s' "$UI_IN" ''
     UI_HINT_C="${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
+    ui_build_logo
+}
+
+# 大写 SBS，紫 -> 粉 -> 橙横向渐变。开头拼一次，之后每帧直接用。
+# 三档降级：真彩 -> 256 色 -> 无色。真彩看 COLORTERM 而不是 tput ——
+# ncurses 只认 terminfo 里声明的色数，而绝大多数终端的 terminfo 只写到 256
+ui_build_logo() {
+    local art=(
+        '   _____ ____  _____'
+        '  / ___// __ )/ ___/'
+        '  \__ \/ __  |\__ \ '
+        ' ___/ / /_/ /___/ / '
+        '/____/_____//____/  '
+    )
+    local mode=0 row col ch t r g b out='' w=20 den=19
+    if [ -n "$C_RESET$C_CYAN" ]; then
+        case "${COLORTERM:-}" in
+        truecolor | 24bit) mode=24 ;;
+        *) [ "$(tput colors 2>/dev/null || echo 0)" -ge 256 ] && mode=8 ;;
+        esac
+    fi
+    if [ "$mode" -eq 0 ]; then
+        printf -v UI_LOGO '%s\n' "${art[@]}"
+        UI_LOGO+=$'\n'
+        return 0
+    fi
+    for row in "${art[@]}"; do
+        col=0
+        while [ "$col" -lt "$w" ]; do
+            ch=${row:col:1}
+            t=$((col * 1000 / den))
+            if [ "$t" -lt 500 ]; then
+                r=$((139 + (236 - 139) * t / 500))
+                g=$((92 + (72 - 92) * t / 500))
+                b=$((246 + (153 - 246) * t / 500))
+            else
+                t=$((t - 500))
+                r=$((236 + (251 - 236) * t / 500))
+                g=$((72 + (146 - 72) * t / 500))
+                b=$((153 + (60 - 153) * t / 500))
+            fi
+            if [ "$mode" -eq 24 ]; then
+                out+=$'\e[38;2;'"$r;$g;$b"'m'"$ch"
+            else
+                out+=$'\e[38;5;'"$((16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255)))"'m'"$ch"
+            fi
+            col=$((col + 1))
+        done
+        out+="$C_RESET"$'\n'
+    done
+    UI_LOGO="$out"$'\n'
 }
 
 # 终端控制
@@ -155,6 +206,9 @@ UI_ALT_OFF=$'\e[?1049l'
 # 进了 /dev/null，还原备用屏的序列凭空消失，用户停在一块空白画布上。
 # 进菜单时复制一份 stderr 到自己的 fd，之后画屏和还原都只认它。
 UI_FD=2
+# 菜单顶上的 logo：5 行画 + 1 行空，画在框外面。任务视图最高能到 22 行，
+# 加上 logo 就是 28 —— 窗口不够高时干脆不画，否则框会被顶出屏幕
+UI_LOGO='' UI_LOGO_ROWS=6 UI_FRAME_MAX=22
 # 同理存一份终端设置，退出时无条件还回去。我们自己的 read -s 会关回显，
 # sudo（sudoers 里 Defaults use_pty）中继期间还会把终端整个置成 raw ——
 # 它正常退出会还原，但被 esc 取消时是被 kill 掉的，那一步就没跑。留下来的
@@ -1736,6 +1790,9 @@ _ui_menu_header() {
 cli_menu_draw() {
     UI_BODY=5 # 9 个动作：2 列 4 行 + q 单独一行
     ui_reset
+    # logo 画在框外面。按「最高的那一帧」判断放不放得下，而不是按当前这一帧
+    # —— 否则任务视图长出几行时 logo 会突然消失，整个框往上跳
+    [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ] && UI_BUF+="$UI_LOGO"
     ui_menu_header
     ui_sep
 
