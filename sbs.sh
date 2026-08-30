@@ -109,6 +109,9 @@ UI_BODY=8 # 当前视图的 body 行数，由各视图在绘制前设定。
 # 另外 SBS_ASCII=1 可手动强制。
 # 注：制表符 ─ │ ╭ 等是「东亚歧义宽度」，终端若把歧义当双宽，框会烂；
 # 而 ✓ (U+2713) / ✗ (U+2717) 是 Neutral，恒占 1 列，比框线本身更安全。
+# 选中标记用 ► (U+25BA)：Neutral 宽度且不在 emoji 集里。看着更像样的
+# ▶ (U+25B6) 反而是最差的选择 —— 它既是歧义宽度，又带 Emoji=Yes 属性，
+# 部分终端会给它 emoji 呈现，直接变成彩色双宽方块把框撑破。
 ui_init_charset() {
     local ascii=0
     [ -n "${SBS_ASCII:-}" ] && ascii=1
@@ -120,7 +123,7 @@ ui_init_charset() {
         UI_OK='+' UI_BAD='x' UI_DOT='*' UI_SEL='>'
     else
         UI_H='─' UI_V='│' UI_TL='╭' UI_TR='╮' UI_BL='╰' UI_BR='╯' UI_ML='├' UI_MR='┤'
-        UI_OK='✓' UI_BAD='✗' UI_DOT='●' UI_SEL='▸'
+        UI_OK='✓' UI_BAD='✗' UI_DOT='●' UI_SEL='►'
     fi
     UI_SPIN=('|' '/' '-' $'\\')
 }
