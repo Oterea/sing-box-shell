@@ -155,6 +155,11 @@ UI_ALT_OFF=$'\e[?1049l'
 # 进了 /dev/null，还原备用屏的序列凭空消失，用户停在一块空白画布上。
 # 进菜单时复制一份 stderr 到自己的 fd，之后画屏和还原都只认它。
 UI_FD=2
+# 同理存一份终端设置，退出时无条件还回去。我们自己的 read -s 会关回显，
+# sudo（sudoers 里 Defaults use_pty）中继期间还会把终端整个置成 raw ——
+# 它正常退出会还原，但被 esc 取消时是被 kill 掉的，那一步就没跑。留下来的
+# 后果是：退出后提示符全挤在一行、打字看不见回显。
+UI_STTY=''
 UI_SYNC_ON=$'\e[?2026h'  # 同步输出：终端攒够一帧再显示，不支持的会忽略
 UI_SYNC_OFF=$'\e[?2026l'
 
@@ -881,19 +886,23 @@ ui_session_begin() {
     UI_IN_MENU=1
     UI_WINCH=0
     ui_measure
+    UI_STTY=$(stty -g 2>/dev/null </dev/tty) || UI_STTY=""
     exec {UI_FD}>&2 # 复制一份 stderr 归界面专用
     printf '%s%s%s' "$UI_ALT_ON" "$UI_CLS" "$UI_HIDE" >&$UI_FD
     # 异常退出也必须把备用屏幕还回去，否则用户停在一块空白画布上。
     # EXIT 管正常返回和脚本出错；INT / TERM 单独一条，因为 trap 只是执行
     # 完继续往下跑 —— 被 kill -INT 之后还留在循环里接着画，反而更乱，
     # 所以还原完直接退出
-    trap 'UI_IN_MENU=0; printf "%s%s" "$UI_SHOW" "$UI_ALT_OFF" >&$UI_FD' EXIT
+    trap 'UI_IN_MENU=0; printf "%s%s" "$UI_SHOW" "$UI_ALT_OFF" >&$UI_FD
+          [ -n "$UI_STTY" ] && stty "$UI_STTY" 2>/dev/null </dev/tty' EXIT
     trap 'ui_session_end; exit 130' INT TERM
     trap 'UI_WINCH=1' WINCH
 }
 ui_session_end() {
     UI_IN_MENU=0
     printf '%s%s' "$UI_SHOW" "$UI_ALT_OFF" >&$UI_FD
+    [ -n "$UI_STTY" ] && stty "$UI_STTY" 2>/dev/null </dev/tty
+    UI_STTY=""
     trap - EXIT INT TERM WINCH
     [ "$UI_FD" -ne 2 ] && exec {UI_FD}>&-
     UI_FD=2
@@ -1042,7 +1051,7 @@ task_fail() {
 task_run() {
     # 输出必须掐掉：界面是往 stderr 画的，被调命令随便往 stderr 写一行就会
     # 糊在框上（tar 的报错、systemctl 的提示都会）。任务视图自己会报步骤结果
-    "$@" >/dev/null 2>&1 &
+    "$@" >/dev/null 2>&1 </dev/null &
     ui_wait_pid $! task_draw
 }
 
@@ -1051,7 +1060,7 @@ task_run() {
 task_capture() {
     local t rc
     t=$(mktemp) || return 1
-    "$@" >"$t" 2>/dev/null &
+    "$@" >"$t" 2>/dev/null </dev/null &
     ui_wait_pid $! task_draw
     rc=$?
     REPLY=$(cat "$t" 2>/dev/null)
@@ -1073,7 +1082,7 @@ ui_spin() { # $1=文案 $2..=命令。命令的 stdout+stderr 收进 REPLY
     SPIN_LABEL="$1"
     shift
     t=$(mktemp) || return 1
-    "$@" >"$t" 2>&1 &
+    "$@" >"$t" 2>&1 </dev/null &
     ui_wait_pid $! _spin_draw
     rc=$?
     REPLY=$(cat "$t" 2>/dev/null)
@@ -1177,7 +1186,7 @@ dl_with_progress() { # $1=落地路径 $2=url $3=步骤下标
     DL_DST="$1" DL_IDX="$3" DL_RW=0
     DL_TOTAL=$(dl_content_length "$2")
     DL_T0=$(date +%s)
-    curl -fL --connect-timeout 5 --retry 2 -s -o "$DL_DST" "$2" &
+    curl -fL --connect-timeout 5 --retry 2 -s -o "$DL_DST" "$2" </dev/null &
     ui_wait_pid $! _dl_draw
 }
 
