@@ -126,6 +126,11 @@ ui_init_charset() {
         UI_OK='✓' UI_BAD='✗' UI_DOT='●' UI_SEL='➤'
     fi
     UI_SPIN=('|' '/' '-' $'\\')
+
+    # 整行的横线和空白：每帧要画四五次，现拼就是每帧多几次 fork
+    printf -v UI_HBAR '%*s' "$UI_IN" ''
+    UI_HBAR="${UI_HBAR// /$UI_H}"
+    printf -v UI_SPACES '%*s' "$UI_IN" ''
 }
 
 # 终端控制
@@ -148,13 +153,14 @@ ui_bar() {
     printf -v t '%*s' "$n" ''
     printf '%s' "${t// /$UI_H}"
 }
-ui_top() { ui_add "$(printf '%s%s%s' "$UI_TL" "$(ui_bar $UI_IN)" "$UI_TR")"; }
-ui_bot() { ui_add "$(printf '%s%s%s' "$UI_BL" "$(ui_bar $UI_IN)" "$UI_BR")"; }
-ui_sep() { ui_add "$(printf '%s%s%s' "$UI_ML" "$(ui_bar $UI_IN)" "$UI_MR")"; }
-ui_blank() { ui_add "$(printf '%s%*s%s' "$UI_V" "$UI_IN" '' "$UI_V")"; }
+# 这四个每帧都要画，原来每个都套着 $(printf ...) 甚至嵌一层 $(ui_bar ...)。
+# 命令替换要 fork，实测 517us 一次，而 printf -v 只要 3.4us —— 差 150 倍。
+# 横线和整行空白是常量，开头生成一次就够（见 ui_init_charset）。
+ui_top() { ui_add "$UI_TL$UI_HBAR$UI_TR"; }
+ui_bot() { ui_add "$UI_BL$UI_HBAR$UI_BR"; }
+ui_sep() { ui_add "$UI_ML$UI_HBAR$UI_MR"; }
+ui_blank() { ui_add "$UI_V$UI_SPACES$UI_V"; }
 
-# 一行左右两段。$1/$2 是纯文本（只用来算 padding），$3/$4 是带色版本（负责显示）。
-# 必须分开：颜色转义序列会被 ${#str} 算进长度，拿带色串算 padding 必歪。
 # 可见宽度：把转义序列剥掉再数。结果放 UI_VIS，剥干净的纯文本放 UI_VIS_TXT。
 # 认两类：CSI（\e[ 到 @-~ 收尾，颜色的 \e[31m 属于此类）和字符集选择
 # （\e(B 之类两字节，tput sgr0 在很多终端上就是 \e(B\e[m 这么一对）。
@@ -197,7 +203,9 @@ ui_lr() { # $1=左 $2=右，都可带色
         ui_add "$UI_V$(ui_fit "$at" $((UI_IN - b)))$2$UI_V"
         return
     fi
-    ui_add "$(printf '%s%s%*s%s%s' "$UI_V" "$1" "$pad" '' "$2" "$UI_V")"
+    local line
+    printf -v line '%s%s%*s%s%s' "$UI_V" "$1" "$pad" '' "$2" "$UI_V"
+    ui_add "$line"
 }
 
 # 分区标题嵌在边线上：├─ service ────┤
@@ -225,16 +233,22 @@ ui_fit() {
 }
 
 # 一个「键 + 标签」单元格。$3 非空时整体置灰，表示该动作当前不可用
+# 结果写 UI_CELL 而不是打印出来 —— 用 $(_ui_cell ...) 的话菜单 5 行 10 个
+# 单元格，每帧就白 fork 10 次
 _ui_cell() {
     if [ -n "$3" ]; then
-        printf '%s%s   %-15s%s' "$3" "$1" "$2" "$C_RESET"
+        printf -v UI_CELL '%s%s   %-15s%s' "$3" "$1" "$2" "$C_RESET"
     else
-        printf '%s%s%s   %-15s' "$C_CYAN" "$1" "$C_RESET" "$2"
+        printf -v UI_CELL '%s%s%s   %-15s' "$C_CYAN" "$1" "$C_RESET" "$2"
     fi
 }
 
 ui_item() {
-    ui_lr "    $(_ui_cell "$1" "$2" "${5:-}")  $(_ui_cell "$3" "$4" "${6:-}")" ""
+    local a
+    _ui_cell "$1" "$2" "${5:-}"
+    a="$UI_CELL"
+    _ui_cell "$3" "$4" "${6:-}"
+    ui_lr "    $a  $UI_CELL" ""
 }
 
 # 步骤行：状态列前置 1 列。$1=状态符 $2=步骤名 $3=细节 $4=右侧 $5=状态色
@@ -796,8 +810,12 @@ now_mono_us() {
 # header 每次重画都要服务状态，原先分成 is-active + is-failed + show NRestarts
 # + uptime(3 个 fork) 共 5 次 systemctl。这里一次 show 全取回来放进全局。
 SVC_STATE=inactive SVC_NRESTARTS=0 SVC_UPTIME_S=-1
+SVC_TICK=''
 svc_snapshot() {
     local k v mono=0
+    # 同 header：一秒查一次够了，spinner 一秒转十来拍不该跟着查十来次 systemctl
+    [ "$SVC_TICK" = "$SECONDS" ] && return 0
+    SVC_TICK=$SECONDS
     SVC_STATE=inactive SVC_NRESTARTS=0 SVC_UPTIME_S=-1
     while IFS='=' read -r k v; do
         case "$k" in
@@ -1107,14 +1125,23 @@ task_fail() {
     task_draw
 }
 
-# 非阻塞探一个键。按下 esc 返回 0，用于中断正在跑的任务
-ui_esc_pressed() {
-    local k rest
-    read -rsn1 -t 0.001 k 2>/dev/null || return 1
+# 等一拍，顺带探键。按下 esc 返回 0，表示要中断当前任务。
+# 一个 read 同时管定速和探键：原来是 sleep 0.12 外加一个 -t 0.001 的 read，
+# sleep 是外部命令每帧白 fork 一次，而且 esc 最坏要等满一整拍才被看见。
+# 方向键、功能键也都以 \e 开头，后面还跟着字节就是转义序列不是取消，顺手
+# 读掉免得漏进下一拍 —— 否则下载时手滑按个方向键任务就没了。
+ui_tick() { # $1=这一拍等多久（秒）
+    local k rest rc
+    read -rsn1 -t "$1" k 2>/dev/null
+    rc=$?
+    [ "$rc" -gt 128 ] && return 1 # 超时 = 这一拍没人按键，正常
+    if [ "$rc" -ne 0 ]; then
+        # stdin 已 EOF（非交互调用），read 会立刻返回，得自己退回 sleep，
+        # 否则循环空转烧 CPU
+        sleep "$1"
+        return 1
+    fi
     [ "$k" = $'\e' ] || return 1
-    # 方向键、功能键也都以 \e 开头。后面还跟着字节就是转义序列而不是取消，
-    # 顺手把余下的字节读掉免得漏进下一次探测 —— 否则下载时手滑按个方向键，
-    # 任务直接就没了（实测确实会）
     read -rsn2 -t 0.05 rest 2>/dev/null && return 1
     [ -z "$rest" ]
 }
@@ -1123,14 +1150,13 @@ ui_esc_pressed() {
 task_wait() { # $1=pid
     local pid=$1
     while kill -0 "$pid" 2>/dev/null; do
-        if ui_esc_pressed; then
+        TASK_TICK=$((TASK_TICK + 1))
+        task_draw
+        if ui_tick 0.08; then
             kill "$pid" 2>/dev/null
             wait "$pid" 2>/dev/null
             return 130
         fi
-        TASK_TICK=$((TASK_TICK + 1))
-        task_draw
-        sleep 0.12
     done
     wait "$pid"
 }
@@ -1138,9 +1164,10 @@ task_wait() { # $1=pid
 # 把步骤列表塞进 footer 区，然后让菜单整体重绘。
 # 任务视图不再是「另一个界面」—— 菜单始终在上面，步骤长在下面。
 task_draw() {
-    local i st sym color
+    local i st sym color nm
     foot_reset
     for i in "${!TASK_NAMES[@]}"; do
+        printf -v nm '%-10s' "${TASK_NAMES[$i]}"
         st="${TASK_STATE[$i]}"
         case "$st" in
         ok) sym="$UI_OK" color="$C_GREEN" ;;
@@ -1153,7 +1180,7 @@ task_draw() {
         *) sym=" " color="$C_DIM" ;;
         esac
         foot_add \
-            "  $color$sym$C_RESET  $C_DIM$(printf '%-10s' "${TASK_NAMES[$i]}")$C_RESET${TASK_DETAIL[$i]}" \
+            "  $color$sym$C_RESET  $C_DIM$nm$C_RESET${TASK_DETAIL[$i]}" \
             "$C_DIM${TASK_RIGHT[$i]:+${TASK_RIGHT[$i]}  }$C_RESET"
     done
     if [ "${#TASK_HINT[@]}" -gt 0 ]; then
@@ -1197,11 +1224,6 @@ dl_with_progress() {
     local pid=$!
 
     while kill -0 "$pid" 2>/dev/null; do
-        if ui_esc_pressed; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null
-            return 130
-        fi
         now=$(stat -c %s "$dst" 2>/dev/null || echo 0)
         elapsed=$(($(date +%s) - t0))
         [ "$elapsed" -lt 1 ] && elapsed=1
@@ -1238,7 +1260,11 @@ dl_with_progress() {
         fi
         TASK_TICK=$((TASK_TICK + 1))
         task_draw
-        sleep 0.2
+        if ui_tick 0.08; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 130
+        fi
     done
     wait "$pid"
 }
@@ -1649,7 +1675,7 @@ task_install_kernel() { # $1=tag $2=下载地址
 # sing-box version(53ms) 和 sing-box check(100ms) 占了一次重画 222ms 里的七成，
 # 而它们只在内核或配置文件变了之后才会变。拿 mtime:size 当键缓存，一次 stat
 # 两个文件只要一个 fork。
-HDR_KEY='' HDR_VER='' HDR_CFG=''
+HDR_KEY='?' HDR_VER='' HDR_CFG=''
 hdr_fields() {
     local key
     key=$(stat -c '%Y:%s' "$SBS_BIN" "$SBS_CONFIG" 2>/dev/null | tr '\n' ' ')
@@ -1665,7 +1691,23 @@ hdr_fields() {
     fi
 }
 
+# header 那三四行每秒要重建十来次，内容却以秒为单位才变（uptime、ago）。
+# 按秒缓存渲染好的字符串：spinner 照转，systemctl / ip / stat 的 fork 全省。
+# 用户一按键就作废（见 cli_menu），所以动作后的状态不会显示滞后。
+HDR_LINES='' HDR_TICK=''
 ui_menu_header() {
+    local key="$SECONDS:$UI_REFRESHING" before
+    if [ "$key" = "$HDR_TICK" ]; then
+        UI_BUF+="$HDR_LINES"
+        return
+    fi
+    before="$UI_BUF"
+    _ui_menu_header
+    HDR_LINES="${UI_BUF#"$before"}"
+    HDR_TICK="$key"
+}
+
+_ui_menu_header() {
     local state scolor ver tun uptime ip loc age
     local l2p l2c l3c
 
@@ -1791,6 +1833,8 @@ cli_menu() {
         cli_menu_draw
         ui_read_key
         key=$UI_KEY
+        # 按了键就作废按秒缓存 —— 动作会改变服务状态，不能等到下一秒才显示
+        HDR_TICK='' SVC_TICK=''
         # 上一个动作的结果显示到下次按键为止
         foot_reset
         case "$key" in
