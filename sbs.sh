@@ -44,19 +44,21 @@ ui_init_colors() {
     if [ ! -t 2 ] || [ "${TERM:-dumb}" = dumb ] || [ -n "${NO_COLOR:-}" ]; then
         return 0
     fi
-    _cap() { # $1=tput 参数 $2=回落用的裸 ANSI
+    _cap() { # $1=回落用的裸 ANSI，其余参数原样传给 tput
+        local fb="$1"
+        shift
         local v
-        v=$(tput $1 2>/dev/null)
-        [ -n "$v" ] && printf '%s' "$v" || printf '%s' "$2"
+        v=$(tput "$@" 2>/dev/null)
+        [ -n "$v" ] && printf '%s' "$v" || printf '%s' "$fb"
     }
-    C_RED=$(_cap "setaf 1" $'\e[31m')
-    C_GREEN=$(_cap "setaf 2" $'\e[32m')
-    C_YELLOW=$(_cap "setaf 3" $'\e[33m')
-    C_CYAN=$(_cap "setaf 6" $'\e[36m')
-    C_DIM=$(_cap dim $'\e[2m')
-    C_BOLD=$(_cap bold $'\e[1m')
-    C_REV=$(_cap rev $'\e[7m')
-    C_RESET=$(_cap sgr0 $'\e[0m')
+    C_RED=$(_cap $'\e[31m' setaf 1)
+    C_GREEN=$(_cap $'\e[32m' setaf 2)
+    C_YELLOW=$(_cap $'\e[33m' setaf 3)
+    C_CYAN=$(_cap $'\e[36m' setaf 6)
+    C_DIM=$(_cap $'\e[2m' dim)
+    C_BOLD=$(_cap $'\e[1m' bold)
+    C_REV=$(_cap $'\e[7m' rev)
+    C_RESET=$(_cap $'\e[0m' sgr0)
     unset -f _cap
 }
 
@@ -115,10 +117,10 @@ ui_init_charset() {
 
     if [ "$ascii" -eq 1 ]; then
         UI_H='-' UI_V='|' UI_TL='+' UI_TR='+' UI_BL='+' UI_BR='+' UI_ML='+' UI_MR='+'
-        UI_OK='+' UI_BAD='x' UI_DOT='*'
+        UI_OK='+' UI_BAD='x' UI_DOT='*' UI_SEL='>'
     else
         UI_H='─' UI_V='│' UI_TL='╭' UI_TR='╮' UI_BL='╰' UI_BR='╯' UI_ML='├' UI_MR='┤'
-        UI_OK='✓' UI_BAD='✗' UI_DOT='●'
+        UI_OK='✓' UI_BAD='✗' UI_DOT='●' UI_SEL='▸'
     fi
     UI_SPIN=('|' '/' '-' $'\\')
 }
@@ -1158,16 +1160,18 @@ ui_choose() {
     local cur=0 key i lp lc
     while true; do
         foot_reset
-        foot_add "  $title" "<>  enter  esc  " \
-            "$C_DIM  $title$C_RESET" "$C_DIM<>  enter  esc$C_RESET  "
+        foot_add "  $title" "< > select   enter ok   esc cancel  " \
+            "$C_DIM  $title$C_RESET" \
+            "$C_DIM< >$C_RESET select   ${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
+        # 每个选项前留一格给三角标记，未选中时留空 —— 这样切换时文字不会左右跳
         lp="   " lc="   "
         for i in "${!opts[@]}"; do
             if [ "$i" -eq "$cur" ]; then
-                lp+=" ${opts[$i]}   "
-                lc+="$C_REV ${opts[$i]} $C_RESET  "
+                lp+="$UI_SEL ${opts[$i]}    "
+                lc+="$C_CYAN$UI_SEL$C_RESET $C_BOLD${opts[$i]}$C_RESET    "
             else
-                lp+=" ${opts[$i]}   "
-                lc+="$C_DIM ${opts[$i]} $C_RESET  "
+                lp+="  ${opts[$i]}    "
+                lc+="  $C_DIM${opts[$i]}$C_RESET    "
             fi
         done
         foot_add "$lp" "" "$lc" ""
@@ -1341,7 +1345,7 @@ task_update_self() {
 # 用 d 而不是 y 做确认键：手滑按到 y 的概率远高于连按两次 d。
 menu_remove_flow() {
     # 默认停在 no —— 危险操作不该按一下就走
-    ui_choose "remove kernel, config and sbs?" "no" "yes" || return 1
+    ui_choose "remove all?" "no" "yes" || return 1
     [ "$UI_CHOICE" -eq 1 ] || return 1
 
     task_begin "remove" "" service files script
