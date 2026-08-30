@@ -1269,10 +1269,14 @@ menu_resolve_sub() {
         host="${cur#*://}"
         host="${host%%/*}"
         ui_choose "subscription  $host" "keep it" "enter a new one" || return 1
-        [ "$UI_CHOICE" -eq 0 ] && {
+        if [ "$UI_CHOICE" -eq 0 ]; then
             SUB_URL="$cur"
             return 0
-        }
+        fi
+        # 明确选了「输入新的」就别再用旧地址预填。输入框只有退格没有光标移动，
+        # 预填一条 80 字的旧地址等于逼人连按 80 下退格 —— 而实际发生的是新地址
+        # 被直接拼在旧地址屁股后面，拼出个不存在的 URL
+        cur=""
     fi
 
     while true; do
