@@ -31,14 +31,34 @@ readonly SBS_UPSTREAM="SagerNet/sing-box"
 SBS_TARGET_SUFFIX=""
 
 # ============================================================ L0 输出原语
-readonly C_RED="$(tput setaf 1 2>/dev/null || printf '')"
-readonly C_GREEN="$(tput setaf 2 2>/dev/null || printf '')"
-readonly C_YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
-readonly C_CYAN="$(tput setaf 6 2>/dev/null || printf '')"
-readonly C_DIM="$(tput dim 2>/dev/null || printf '')"
-readonly C_BOLD="$(tput bold 2>/dev/null || printf '')"
-readonly C_REV="$(tput rev 2>/dev/null || printf '')"
-readonly C_RESET="$(tput sgr0 2>/dev/null || printf '')"
+# 颜色。优先问 terminfo，问不到就回落到硬编码 ANSI。
+#
+# 不能只依赖 tput：SSH 会把客户端的 TERM 原样带到服务器，而服务器的
+# terminfo 数据库未必有那个条目 —— 比如 Ghostty 默认 TERM=xterm-ghostty，
+# 多数服务器的 ncurses 里没有，tput 全部失败，界面就变成无色的。
+# 而我们只用最基础的 SGR（30-37 / 1 / 2 / 7 / 0），任何 ANSI 终端都支持。
+C_RED='' C_GREEN='' C_YELLOW='' C_CYAN='' C_DIM='' C_BOLD='' C_REV='' C_RESET=''
+ui_init_colors() {
+    # 非 tty、dumb 终端、或设了 NO_COLOR 就一律无色。
+    # 判断 fd 2 而不是 1 —— 界面画在 stderr 上
+    if [ ! -t 2 ] || [ "${TERM:-dumb}" = dumb ] || [ -n "${NO_COLOR:-}" ]; then
+        return 0
+    fi
+    _cap() { # $1=tput 参数 $2=回落用的裸 ANSI
+        local v
+        v=$(tput $1 2>/dev/null)
+        [ -n "$v" ] && printf '%s' "$v" || printf '%s' "$2"
+    }
+    C_RED=$(_cap "setaf 1" $'\e[31m')
+    C_GREEN=$(_cap "setaf 2" $'\e[32m')
+    C_YELLOW=$(_cap "setaf 3" $'\e[33m')
+    C_CYAN=$(_cap "setaf 6" $'\e[36m')
+    C_DIM=$(_cap dim $'\e[2m')
+    C_BOLD=$(_cap bold $'\e[1m')
+    C_REV=$(_cap rev $'\e[7m')
+    C_RESET=$(_cap sgr0 $'\e[0m')
+    unset -f _cap
+}
 
 # 四个都写 stderr。这是「返回值走 stdout」那条约定必须配套的另一半 ——
 # 上层用 $(...) 捕获下层返回值时，任何写到 stdout 的提示文字都会混进返回值里。
@@ -1695,6 +1715,7 @@ cli_dispatch() {
 
 # ============================================================ 入口
 main() {
+    ui_init_colors
     ui_init_charset
     core_check_deps || exit 1
     core_ensure_workdir || die "无法创建 $SBS_WORK_DIR"
