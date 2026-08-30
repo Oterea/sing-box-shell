@@ -394,6 +394,16 @@ core_check_deps() {
     return 1
 }
 
+# 启停、写 unit、自更新全要 sudo，而且都跑在后台子 shell 里（要让 spinner 转）。
+# sudo 问密码是从 /dev/tty 读的，后台子 shell 里那个提示看不见，用户敲的字又
+# 被读键循环抢走 —— 实测会一直转下去转不完。所以全部用 sudo -n（不许交互），
+# 拿不到权限就立刻失败，并在进菜单前先探一次。
+core_check_sudo() {
+    sudo -n true 2>/dev/null && return 0
+    core_error "需要免密 sudo。先跑一次 sudo -v，或者直接 sudo sbs"
+    return 1
+}
+
 core_ensure_workdir() {
     [ -d "$SBS_WORK_DIR" ] && return 0
     mkdir -p "$SBS_WORK_DIR"
@@ -709,7 +719,7 @@ svc_write_unit() {
     # Restart=on-failure 而非 always：正常退出（exit 0）不该被反复拉起
     # RestartSec：配置写错导致起来就崩时，避免秒级重启刷爆日志、淹没真正的错误
     # LimitNOFILE：TUN 模式下整机连接都过 sing-box，默认 1024 个句柄容易撞上限
-    sudo tee "$SBS_SERVICE" >/dev/null <<UNIT
+    sudo -n tee "$SBS_SERVICE" >/dev/null <<UNIT
 [Unit]
 Description=$ver (managed by sbs)
 After=network.target
@@ -729,14 +739,14 @@ UNIT
         core_error "写入 $SBS_SERVICE 失败"
         return 1
     }
-    sudo systemctl daemon-reload
+    sudo -n systemctl daemon-reload
     core_info "service file written: $SBS_SERVICE"
 }
 
-svc_start() { sudo systemctl start "$SBS_UNIT_NAME"; }
-svc_stop() { sudo systemctl stop "$SBS_UNIT_NAME"; }
-svc_status() { sudo systemctl status "$SBS_UNIT_NAME" --no-pager; }
-svc_restart() { sudo systemctl restart "$SBS_UNIT_NAME"; }
+svc_start() { sudo -n systemctl start "$SBS_UNIT_NAME"; }
+svc_stop() { sudo -n systemctl stop "$SBS_UNIT_NAME"; }
+svc_status() { sudo -n systemctl status "$SBS_UNIT_NAME" --no-pager; }
+svc_restart() { sudo -n systemctl restart "$SBS_UNIT_NAME"; }
 
 svc_is_active() { systemctl is-active --quiet "$SBS_UNIT_NAME"; }
 
@@ -774,10 +784,10 @@ svc_snapshot() {
 }
 
 svc_purge() {
-    sudo systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
-    sudo systemctl stop "$SBS_UNIT_NAME" >/dev/null 2>&1
-    sudo rm -f "$SBS_SERVICE"
-    sudo systemctl daemon-reload
+    sudo -n systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
+    sudo -n systemctl stop "$SBS_UNIT_NAME" >/dev/null 2>&1
+    sudo -n rm -f "$SBS_SERVICE"
+    sudo -n systemctl daemon-reload
 }
 
 
@@ -811,16 +821,16 @@ cmd_update_self() {
     # 就地覆盖会让它从新内容的行中间接上，把两个版本串起来跑（已实测复现）。
     stage="$(dirname "$SBS_EXEC")/.$(basename "$SBS_EXEC").$$.tmp"
     _SELF_STAGE="$stage"
-    trap 'rm -rf "${_SELF_TMPDIR:-}" 2>/dev/null; sudo rm -f "${_SELF_STAGE:-}" 2>/dev/null' EXIT
+    trap 'rm -rf "${_SELF_TMPDIR:-}" 2>/dev/null; sudo -n rm -f "${_SELF_STAGE:-}" 2>/dev/null' EXIT
 
     script_fetch "$tmpdir/sbs.sh" sbs.sh || return 1
     bash -n "$tmpdir/sbs.sh" || {
         core_error "拉到的脚本语法不合法，放弃更新"
         return 1
     }
-    sudo cp "$tmpdir/sbs.sh" "$stage" || return 1
-    sudo chmod 755 "$stage" || return 1
-    sudo mv -f "$stage" "$SBS_EXEC" || return 1
+    sudo -n cp "$tmpdir/sbs.sh" "$stage" || return 1
+    sudo -n chmod 755 "$stage" || return 1
+    sudo -n mv -f "$stage" "$SBS_EXEC" || return 1
     core_info "sbs 已更新"
 }
 
@@ -1343,9 +1353,9 @@ task_update_self() {
     # 本脚本就是 $SBS_EXEC，而 bash 边读边执行、按字节偏移续读。
     # 就地覆盖会让它从新内容的行中间接上，把两个版本串起来跑，所以必须改名顶替。
     task_step 2
-    if ! sudo cp "$tmpdir/sbs.sh" "$stage" || ! sudo chmod 755 "$stage" || ! sudo mv -f "$stage" "$SBS_EXEC"; then
-        task_fail "install failed" "cannot replace $SBS_EXEC" "check sudo permissions"
-        sudo rm -f "$stage" 2>/dev/null
+    if ! sudo -n cp "$tmpdir/sbs.sh" "$stage" || ! sudo -n chmod 755 "$stage" || ! sudo -n mv -f "$stage" "$SBS_EXEC"; then
+        task_fail "install failed" "cannot replace $SBS_EXEC" "check sudo -n permissions"
+        sudo -n rm -f "$stage" 2>/dev/null
         rm -rf "$tmpdir"
         return 1
     fi
@@ -1369,11 +1379,11 @@ menu_remove_flow() {
     task_run svc_purge # systemctl stop 可能要等服务自己收尾，别让屏幕冻着
     task_ok "unit disabled and removed" ""
     task_step 1
-    task_run sudo rm -rf "$SBS_WORK_DIR"
+    task_run sudo -n rm -rf "$SBS_WORK_DIR"
     task_ok "$SBS_WORK_DIR" ""
     # 删掉自己之后本进程仍能跑完 —— bash 攥着已打开的 fd，inode 还活着
     task_step 2
-    sudo rm -f "$SBS_EXEC"
+    sudo -n rm -f "$SBS_EXEC"
     task_ok "$SBS_EXEC" ""
     return 0
 }
@@ -1646,6 +1656,7 @@ cli_menu() {
     fi
 
     local key rc
+    core_check_sudo || return 1
     # 无论怎么退出（正常 / Ctrl-C / 报错）都要把光标恢复出来
     ui_session_begin
     while true; do
