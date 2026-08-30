@@ -783,6 +783,21 @@ svc_snapshot() {
     fi
 }
 
+# systemd 认为「起来了」= 进程 fork 出来了，而 sing-box 建 tun 还要 0.1~0.3s
+# （实测 restart 返回耗时 0.06s，tun0 在 0.24s 才出现）。面板紧接着重建就会
+# 显示 no tun —— 而面板是快照，这个错误会一直挂到下次操作。
+# 只在配置里确实声明了 tun 入站时才等，否则本来就不该有。
+svc_wait_tun() {
+    jq -e '[.inbounds[]? | select(.type == "tun")] | length > 0' \
+        "$SBS_CONFIG" >/dev/null 2>&1 || return 0
+    local i
+    for i in $(seq 1 40); do
+        tun_info >/dev/null 2>&1 && return 0
+        sleep 0.05
+    done
+    return 1 # 等不到也不算启动失败，面板照实显示 no tun
+}
+
 svc_purge() {
     sudo -n systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
     sudo -n systemctl stop "$SBS_UNIT_NAME" >/dev/null 2>&1
@@ -838,6 +853,7 @@ cmd_update_self() {
 cmd_start() {
     cfg_check || return 1
     if svc_start; then
+        svc_wait_tun
         core_info "sing-box started"
     else
         core_error "启动失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
@@ -858,6 +874,7 @@ cmd_stop() {
 cmd_restart() {
     cfg_check || return 1
     if svc_restart; then
+        svc_wait_tun
         core_info "sing-box restarted"
     else
         core_error "重启失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
