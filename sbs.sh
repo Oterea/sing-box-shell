@@ -248,7 +248,7 @@ foot_rows() { printf '%s' "${#FOOT_L[@]}"; }
 # 读一个键，方向键与回车归一化成名字
 # 读一个键，结果写进 UI_KEY。刻意不做成 $(ui_read_key) —— 命令替换是子 shell，
 # UI_PENDING 回推缓冲存不下来，而且每次按键白搭一个 fork。
-UI_KEY='' UI_PENDING=''
+UI_KEY='' UI_PENDING='' UI_INPUT='' SUB_URL=''
 ui_read_key() {
     local k rest
     if [ -n "$UI_PENDING" ]; then
@@ -1227,16 +1227,81 @@ ui_choose() {
         right | down) cur=$(((cur + 1) % ${#opts[@]})) ;;
         enter)
             UI_CHOICE=$cur
+            foot_reset
             return 0
             ;;
         esc | q)
             UI_CHOICE=-1
+            # 提示行是一次性的，必须在这里清掉。cli_menu 的 foot_reset 写在
+            # 读键「之后」，所以取消返回主菜单时这两行还留在屏幕上，看着像
+            # esc 没生效 —— 于是再按一次，那一次其实只是把残留清掉了。
+            # 「按两次 esc 才有用」就是这么来的。
+            foot_reset
+            foot_add "  cancelled" "" "$C_DIM  cancelled$C_RESET" ""
             return 1
             ;;
         esac
     done
 }
 
+
+# footer 里的单行输入，结果写 UI_INPUT，esc 取消返回 1。
+# 不用 read -e：readline 把 ESC 当作 meta 前缀吞掉再等下一个键，esc 根本
+# 不可能中断读取（试过 inputrc 里绑 "\e": abort 也没用，它只是丢掉行然后
+# 接着等）。更糟的是连按几次 esc 之后，回车会被当成 M-RET 一并吃掉，人就
+# 卡在输入框里出不来了。
+ui_input() { # $1=标题 $2=预填值 $3=可选提示，敲第一个键就让位给标题
+    local title="$1" val="$2" note="${3:-}" disp k
+    while true; do
+        foot_reset
+        foot_add "  ${note:-$title}" "enter ok   esc cancel  " \
+            "$C_DIM  ${note:-$title}$C_RESET" "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
+        # 地址通常比框还长，看尾巴 —— 那才是正在敲的一头
+        disp="$val"
+        [ "${#disp}" -gt 50 ] && disp="...${val: -47}"
+        # 行尾那个反色空格是光标，纯文本版对应补一个空格好让宽度算得准
+        foot_add "  > $disp " "" "  $C_CYAN>$C_RESET $disp$C_REV $C_RESET" ""
+        cli_menu_draw
+
+        ui_read_key
+        case "$UI_KEY" in
+        enter)
+            UI_INPUT="$val"
+            foot_reset
+            return 0
+            ;;
+        esc)
+            foot_reset
+            foot_add "  cancelled" "" "$C_DIM  cancelled$C_RESET" ""
+            return 1
+            ;;
+        left | right | up | down) continue ;;
+        $'\177' | $'\b') val="${val%?}" ;;
+        $'\025') val="" ;; # Ctrl-U 清空
+        *) val="$val$UI_KEY" ;;
+        esac
+        note="" # 动过就别再挂着上一轮的抱怨
+
+        # 粘贴时几十个字节是连着到的。一个字节重画一帧要 ~50ms，一条订阅
+        # 地址就能卡两三秒。先把已经排队的字节一次吃干净，再画下一帧。
+        while IFS= read -rsn1 -t 0.002 k 2>/dev/null; do
+            case "$k" in
+            '')
+                UI_INPUT="$val"
+                foot_reset
+                return 0
+                ;;
+            $'\e')
+                UI_PENDING="$k$UI_PENDING" # 交回主循环去做转义序列判定
+                break
+                ;;
+            $'\177' | $'\b') val="${val%?}" ;;
+            $'\025') val="" ;;
+            *) val="$val$k" ;;
+            esac
+        done
+    done
+}
 
 # ── 瞬时动作：成功就地反馈（不离开菜单），失败才进任务视图停住 ──
 # 瞬时动作。成功在 footer 留一行，失败留两行（原因 + 去哪看日志）
@@ -1259,35 +1324,32 @@ menu_quick() { # $1=动作函数 $2=成功文案 $3=动作名
 # ── 订阅地址：沿用现有 / 输入新的 ──
 # 订阅地址：有旧值先问要不要沿用，要新的就在 footer 里输入
 menu_resolve_sub() {
-    local cur url
+    local cur note=""
     cur=$(cfg_url_get 2>/dev/null) || cur=""
     if [ -n "$cur" ]; then
         ui_choose "subscription  $(ui_fit "$cur" 30)" "keep it" "enter a new one" || return 1
         [ "$UI_CHOICE" -eq 0 ] && {
-            printf '%s\n' "$cur"
+            SUB_URL="$cur"
             return 0
         }
     fi
 
-    foot_reset
-    foot_add "  subscription url" "enter  esc  " \
-        "$C_DIM  subscription url$C_RESET" "$C_DIM""enter  esc$C_RESET  "
-    foot_add "  > " "" "  $C_CYAN>$C_RESET " ""
-    cli_menu_draw
-    # 光标停到 footer 最后一行（即底边上面那行）的输入位置。
-    # 用相对上移而不是绝对行号 —— header 可能是 3 行也可能 4 行（restarts 那条）
-    printf '\e[1A\e[5G%s' "$UI_SHOW" >&2
-    read -r -e -i "$cur" url 2>/dev/null || url="" # -e 开 readline，-i 预填旧值
-    printf '%s' "$UI_HIDE" >&2
-    cfg_url_valid "$url" || return 1
-    printf '%s\n' "$url"
+    while true; do
+        ui_input "subscription url" "$cur" "$note" || return 1
+        cfg_url_valid "$UI_INPUT" && break
+        # 不合法就地重问。原来是静默退回菜单，看着又像按键没反应
+        cur="$UI_INPUT"
+        note="url must start with http://"
+    done
+    SUB_URL="$UI_INPUT"
 }
 
 
 # ── 任务：更新订阅配置 ──
 task_update_config() {
     local sub tmp out had
-    sub=$(menu_resolve_sub) || return 0 # 取消不算失败
+    menu_resolve_sub || return 0 # 取消不算失败
+    sub="$SUB_URL"
     task_begin "update config" "" fetch validate save
     tmp="$SBS_WORK_DIR/.config.$$.json"
 
