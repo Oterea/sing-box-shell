@@ -38,29 +38,6 @@ SBS_TARGET_SUFFIX=""
 # 多数服务器的 ncurses 里没有，tput 全部失败，界面就变成无色的。
 # 而我们只用最基础的 SGR（30-37 / 1 / 2 / 7 / 0），任何 ANSI 终端都支持。
 C_RED='' C_GREEN='' C_YELLOW='' C_CYAN='' C_DIM='' C_BOLD='' C_REV='' C_RESET=''
-ui_init_colors() {
-    # 非 tty、dumb 终端、或设了 NO_COLOR 就一律无色。
-    # 判断 fd 2 而不是 1 —— 界面画在 stderr 上
-    if [ ! -t 2 ] || [ "${TERM:-dumb}" = dumb ] || [ -n "${NO_COLOR:-}" ]; then
-        return 0
-    fi
-    _cap() { # $1=回落用的裸 ANSI，其余参数原样传给 tput
-        local fb="$1"
-        shift
-        local v
-        v=$(tput "$@" 2>/dev/null)
-        [ -n "$v" ] && printf '%s' "$v" || printf '%s' "$fb"
-    }
-    C_RED=$(_cap $'\e[31m' setaf 1)
-    C_GREEN=$(_cap $'\e[32m' setaf 2)
-    C_YELLOW=$(_cap $'\e[33m' setaf 3)
-    C_CYAN=$(_cap $'\e[36m' setaf 6)
-    C_DIM=$(_cap $'\e[2m' dim)
-    C_BOLD=$(_cap $'\e[1m' bold)
-    C_REV=$(_cap $'\e[7m' rev)
-    C_RESET=$(_cap $'\e[0m' sgr0)
-    unset -f _cap
-}
 
 # 四个都写 stderr。这是「返回值走 stdout」那条约定必须配套的另一半 ——
 # 上层用 $(...) 捕获下层返回值时，任何写到 stdout 的提示文字都会混进返回值里。
@@ -92,7 +69,7 @@ fmt_size() {
     else printf '%dB' "$b"; fi
 }
 
-# ============================================================ L0 界面原语
+# ============================================================ L0 界面原语：帧缓冲与行渲染
 #
 # 画框的两个坑，都必须靠「纯文本算宽度、带色版本打印」来绕：
 #   1. 颜色转义序列会被 ${#str} 算进长度，直接拿带色字符串算 padding 必歪
@@ -106,6 +83,30 @@ UI_HINT="enter ok   esc cancel  "
 UI_HINT_C='' # 带色版，颜色初始化之后才能拼（见 ui_init_charset）
 UI_BODY=8 # 当前视图的 body 行数，由各视图在绘制前设定。
 # 固定行数是为了重绘时框不抖；不同视图行数不同，靠 ui_redraw 的 \e[J 清残留
+
+ui_init_colors() {
+    # 非 tty、dumb 终端、或设了 NO_COLOR 就一律无色。
+    # 判断 fd 2 而不是 1 —— 界面画在 stderr 上
+    if [ ! -t 2 ] || [ "${TERM:-dumb}" = dumb ] || [ -n "${NO_COLOR:-}" ]; then
+        return 0
+    fi
+    _cap() { # $1=回落用的裸 ANSI，其余参数原样传给 tput
+        local fb="$1"
+        shift
+        local v
+        v=$(tput "$@" 2>/dev/null)
+        [ -n "$v" ] && printf '%s' "$v" || printf '%s' "$fb"
+    }
+    C_RED=$(_cap $'\e[31m' setaf 1)
+    C_GREEN=$(_cap $'\e[32m' setaf 2)
+    C_YELLOW=$(_cap $'\e[33m' setaf 3)
+    C_CYAN=$(_cap $'\e[36m' setaf 6)
+    C_DIM=$(_cap $'\e[2m' dim)
+    C_BOLD=$(_cap $'\e[1m' bold)
+    C_REV=$(_cap $'\e[7m' rev)
+    C_RESET=$(_cap $'\e[0m' sgr0)
+    unset -f _cap
+}
 
 # 符号集。Unicode 一档更好看，但两种场景必须降级成纯 ASCII：
 #   TERM=linux  物理控制台没有 Unicode 字体
@@ -289,6 +290,9 @@ foot_add() { # $1=左 $2=右，都可带色
 # 读一个键，结果写进 UI_KEY。刻意不做成 $(ui_read_key) —— 命令替换是子 shell，
 # UI_PENDING 回推缓冲存不下来，而且每次按键白搭一个 fork。
 UI_KEY='' UI_PENDING='' UI_INPUT='' SUB_URL=''
+
+# ============================================================ L0 输入与等待原语
+
 ui_read_key() {
     local k rest
     if [ -n "$UI_PENDING" ]; then
@@ -336,6 +340,47 @@ ui_read_key() {
         ;;
     esac
     UI_KEY=$k
+}
+
+# 等一拍，顺带探键。按下 esc 返回 0，表示要中断当前任务。
+# 一个 read 同时管定速和探键：原来是 sleep 0.12 外加一个 -t 0.001 的 read，
+# sleep 是外部命令每帧白 fork 一次，而且 esc 最坏要等满一整拍才被看见。
+# 方向键、功能键也都以 \e 开头，后面还跟着字节就是转义序列不是取消，顺手
+# 读掉免得漏进下一拍 —— 否则下载时手滑按个方向键任务就没了。
+ui_tick() { # $1=这一拍等多久（秒）
+    local k rest rc
+    read -rsn1 -t "$1" k 2>/dev/null
+    rc=$?
+    [ "$rc" -gt 128 ] && return 1 # 超时 = 这一拍没人按键，正常
+    if [ "$rc" -ne 0 ]; then
+        # stdin 已 EOF（非交互调用），read 会立刻返回，得自己退回 sleep，
+        # 否则循环空转烧 CPU
+        sleep "$1"
+        return 1
+    fi
+    [ "$k" = $'\e' ] || return 1
+    read -rsn2 -t 0.05 rest 2>/dev/null && return 1
+    [ -z "$rest" ]
+}
+
+# 动画相位。任务视图和 footer 单行 spinner 共用一个计数器 —— 它不是任务
+# 视图的私产，所以放在这里而不是 TASK_* 那一堆里
+UI_TICK=0
+
+# 等一个后台进程结束，期间每拍调一次 $2 重画。用户按 esc 就杀掉它返回 130，
+# 否则返回被等进程自己的退出码。任务视图和 footer 单行 spinner 都走这里。
+ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
+    local pid=$1 draw=$2
+    while kill -0 "$pid" 2>/dev/null; do
+        UI_TICK=$((UI_TICK + 1))
+        "$draw"
+        if ui_tick 0.08; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 130
+        fi
+    done
+    wait "$pid"
 }
 
 # ============================================================ L0 环境
@@ -733,6 +778,9 @@ svc_purge() {
     sudo systemctl daemon-reload
 }
 
+
+# ============================================================ L3 会话与不需要交互的命令
+
 # 进入 / 退出全屏界面会话。命令行直接调 install 时也要用
 ui_session_begin() {
     UI_IN_MENU=1
@@ -823,7 +871,7 @@ cmd_status() {
     return 0
 }
 
-# ============================================================ L4 任务视图
+# ============================================================ L4 任务视图：步骤列表与下载进度
 #
 # 一个任务 = 若干步骤。每步有状态（pending / running / ok / fail）、细节、右侧信息。
 # 画在与菜单同一个框里：header 三行不变，只有 body 换成步骤列表。
@@ -839,7 +887,6 @@ TASK_DETAIL=()
 TASK_RIGHT=()
 TASK_HINT=()   # 失败时的说明行
 TASK_CUR=-1
-TASK_TICK=0
 
 task_begin() {
     TASK_TITLE="$1"
@@ -850,7 +897,7 @@ task_begin() {
     TASK_RIGHT=()
     TASK_HINT=()
     TASK_CUR=-1
-    TASK_TICK=0
+    UI_TICK=0
     shift 2 2>/dev/null || shift $#
     local n
     for n in "$@"; do
@@ -884,43 +931,6 @@ task_fail() {
     task_draw
 }
 
-# 等一拍，顺带探键。按下 esc 返回 0，表示要中断当前任务。
-# 一个 read 同时管定速和探键：原来是 sleep 0.12 外加一个 -t 0.001 的 read，
-# sleep 是外部命令每帧白 fork 一次，而且 esc 最坏要等满一整拍才被看见。
-# 方向键、功能键也都以 \e 开头，后面还跟着字节就是转义序列不是取消，顺手
-# 读掉免得漏进下一拍 —— 否则下载时手滑按个方向键任务就没了。
-ui_tick() { # $1=这一拍等多久（秒）
-    local k rest rc
-    read -rsn1 -t "$1" k 2>/dev/null
-    rc=$?
-    [ "$rc" -gt 128 ] && return 1 # 超时 = 这一拍没人按键，正常
-    if [ "$rc" -ne 0 ]; then
-        # stdin 已 EOF（非交互调用），read 会立刻返回，得自己退回 sleep，
-        # 否则循环空转烧 CPU
-        sleep "$1"
-        return 1
-    fi
-    [ "$k" = $'\e' ] || return 1
-    read -rsn2 -t 0.05 rest 2>/dev/null && return 1
-    [ -z "$rest" ]
-}
-
-# 等一个后台进程结束，期间每拍调一次 $2 重画。用户按 esc 就杀掉它返回 130，
-# 否则返回被等进程自己的退出码。任务视图和 footer 单行 spinner 都走这里。
-ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
-    local pid=$1 draw=$2
-    while kill -0 "$pid" 2>/dev/null; do
-        TASK_TICK=$((TASK_TICK + 1))
-        "$draw"
-        if ui_tick 0.08; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null
-            return 130
-        fi
-    done
-    wait "$pid"
-}
-
 # 在任务视图里跑一条命令：后台执行、spinner 转起来，返回它自己的退出码，
 # 130 表示用户按 esc 取消
 task_run() {
@@ -947,7 +957,7 @@ task_capture() {
 SPIN_LABEL=''
 _spin_draw() {
     foot_reset
-    foot_add "$C_CYAN  ${UI_SPIN[$((TASK_TICK % 4))]}$C_RESET  $C_DIM$SPIN_LABEL$C_RESET" ""
+    foot_add "$C_CYAN  ${UI_SPIN[$((UI_TICK % 4))]}$C_RESET  $C_DIM$SPIN_LABEL$C_RESET" ""
     cli_menu_draw
 }
 ui_spin() {
@@ -970,7 +980,7 @@ task_draw() {
         fail) sym="$UI_BAD" color="$C_RED" ;;
         skip) sym="$UI_BAD" color="$C_YELLOW" ;;
         running)
-            sym="${UI_SPIN[$((TASK_TICK % 4))]}"
+            sym="${UI_SPIN[$((UI_TICK % 4))]}"
             color="$C_CYAN"
             ;;
         *) sym=" " color="$C_DIM" ;;
@@ -1056,6 +1066,9 @@ dl_with_progress() { # $1=落地路径 $2=url $3=步骤下标
     curl -fL --connect-timeout 5 --retry 2 -s -o "$DL_DST" "$2" &
     ui_wait_pid $! _dl_draw
 }
+
+
+# ============================================================ L4 交互控件：底部的选择框与输入框
 
 # ── 选择视图：在同一个框里做单键选择 ──
 # $1=标题 $2..=「键|标签」，返回按下的键
@@ -1173,6 +1186,9 @@ ui_input() { # $1=标题 $2=预填值 $3=可选提示，敲第一个键就让位
         done
     done
 }
+
+
+# ============================================================ L4 编排：一个动作从头到尾怎么走
 
 # ── 瞬时动作：成功就地反馈（不离开菜单），失败才进任务视图停住 ──
 # 瞬时动作。成功在 footer 留一行，失败留两行（原因 + 去哪看日志）
@@ -1455,7 +1471,7 @@ task_install_kernel() { # $1=tag $2=下载地址
     return 0
 }
 
-# ============================================================ L4 菜单
+# ============================================================ L4 菜单渲染
 # header 三行 + 分隔线。菜单和任务视图共用 —— 长任务进行时也能看到服务状态
 # sing-box version(53ms) 和 sing-box check(100ms) 占了一次重画 222ms 里的七成，
 # 而它们只在内核或配置文件变了之后才会变。拿 mtime:size 当键缓存，一次 stat
@@ -1596,6 +1612,9 @@ cli_menu_draw() {
     ui_redraw
 }
 
+
+# ============================================================ L4 主循环与分发
+
 cli_menu() {
     # 终端太窄画框会折行，比没框还难看；直接退回帮助
     local cols
@@ -1661,7 +1680,6 @@ cli_menu() {
     done
 }
 
-# ============================================================ L4 分发
 cli_help() {
     cat <<'USAGE'
 Usage:
