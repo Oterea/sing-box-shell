@@ -1197,9 +1197,13 @@ ui_choose() {
     shift
     local opts=("$@")
     local cur=0 key i lp lc
+    local hint="enter ok   esc cancel  "
+    # 标题超长会把提示挤出框外。ui_lr 遇到负 padding 只是钳到 0，行照样变长、
+    # 框照样破，所以在这里先裁进可用宽度
+    title=$(ui_fit "$title" $((UI_IN - ${#hint} - 4)))
     while true; do
         foot_reset
-        foot_add "  $title" "enter ok   esc cancel  " \
+        foot_add "  $title" "$hint" \
             "$C_DIM  $title$C_RESET" \
             "${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
         # 每个选项前留一格给三角标记，未选中时留空 —— 这样切换时文字不会左右跳
@@ -1324,10 +1328,13 @@ menu_quick() { # $1=动作函数 $2=成功文案 $3=动作名
 # ── 订阅地址：沿用现有 / 输入新的 ──
 # 订阅地址：有旧值先问要不要沿用，要新的就在 footer 里输入
 menu_resolve_sub() {
-    local cur note=""
+    local cur host note=""
     cur=$(cfg_url_get 2>/dev/null) || cur=""
     if [ -n "$cur" ]; then
-        ui_choose "subscription  $(ui_fit "$cur" 30)" "keep it" "enter a new one" || return 1
+        # 这点宽度别浪费在 https:// 和 query 上，主机名才认得出是哪个订阅
+        host="${cur#*://}"
+        host="${host%%/*}"
+        ui_choose "subscription  $host" "keep it" "enter a new one" || return 1
         [ "$UI_CHOICE" -eq 0 ] && {
             SUB_URL="$cur"
             return 0
