@@ -1167,11 +1167,16 @@ ui_choose() {
         lp="   " lc="   "
         for i in "${!opts[@]}"; do
             if [ "$i" -eq "$cur" ]; then
-                lp+="$UI_SEL ${opts[$i]}    "
-                lc+="$C_CYAN$UI_SEL$C_RESET $C_BOLD${opts[$i]}$C_RESET    "
+                # 三角 + 反色，两者分工不同：
+                #   三角是「形状」线索 —— NO_COLOR / dumb 终端 / terminfo 缺条目时
+                #     颜色全失效，它是唯一还能指出选中项的东西
+                #   反色是「颜色」线索 —— \e[7m 是相对当前主题取反而非固定颜色，
+                #     深色浅色主题下都必然是高对比块，比青色之类稳得多
+                lp+="$UI_SEL  ${opts[$i]}     "
+                lc+="$C_CYAN$UI_SEL$C_RESET $C_REV ${opts[$i]} $C_RESET    "
             else
-                lp+="  ${opts[$i]}    "
-                lc+="  $C_DIM${opts[$i]}$C_RESET    "
+                lp+="   ${opts[$i]}     "
+                lc+="   $C_DIM${opts[$i]}$C_RESET     "
             fi
         done
         foot_add "$lp" "" "$lc" ""
