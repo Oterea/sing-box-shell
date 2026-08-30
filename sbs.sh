@@ -157,7 +157,13 @@ ui_blank() { ui_add "$(printf '%s%*s%s' "$UI_V" "$UI_IN" '' "$UI_V")"; }
 # 必须分开：颜色转义序列会被 ${#str} 算进长度，拿带色串算 padding 必歪。
 ui_lr() {
     local pad=$((UI_IN - ${#1} - ${#2}))
-    [ "$pad" -lt 0 ] && pad=0
+    if [ "$pad" -lt 0 ]; then
+        # 放不下就退回「无色 + 裁剪」。带色版里混着转义序列，按可见宽度裁剪
+        # 不安全，所以只裁纯文本版。宁可这一行掉色，也不能把框撑破 ——
+        # 原来这里是把 pad 钳到 0 完事，行照样变长，而且不报错，只会默默画歪
+        ui_add "$UI_V$(ui_fit "$1" $((UI_IN - ${#2})))$2$UI_V"
+        return
+    fi
     ui_add "$(printf '%s%s%*s%s%s' "$UI_V" "${3:-$1}" "$pad" '' "${4:-$2}" "$UI_V")"
 }
 
@@ -183,7 +189,14 @@ ui_kv() {
 ui_fit() {
     local t="$1"
     local n="$2"
-    if [ "${#t}" -le "$n" ]; then printf '%s' "$t"; else printf '%s...' "${t:0:$((n - 3))}"; fi
+    [ "$n" -lt 0 ] && n=0
+    if [ "${#t}" -le "$n" ]; then
+        printf '%s' "$t"
+    elif [ "$n" -le 3 ]; then
+        printf '%s' "${t:0:$n}" # 放不下省略号就直接截，${t:0:负数} 会从尾部截
+    else
+        printf '%s...' "${t:0:$((n - 3))}"
+    fi
 }
 
 # 一个「键 + 标签」单元格。$3 非空时整体置灰，表示该动作当前不可用
@@ -1152,10 +1165,12 @@ dl_content_length() { # $1=url
 dl_with_progress() {
     local dst="$1" url="$2" idx="$3"
     local total now prev=0 t0 elapsed spd pct eta bar f
-    # 进度条列宽。左半边 = 2+符号+2+名字10 + 条 + " nnn%" = 20+w，
-    # 右半边最长 "12.3M/s  eta 23h 59m" 20 字再加 2 字尾距。框内只有 56，
-    # 所以 w=16 配合下面对右半边 18 字的封顶才刚好放得下
-    local w=16
+    # 条宽不写死。这一行的账是
+    #   2 缩进 + 1 符号 + 2 + 10 名字 + w 条 + 5 " nnn%" + rw 右半边 + 2 尾距 <= UI_IN
+    # 前后那些固定部分合计 22（WFIX），剩下的都给条：w = UI_IN - 22 - rw。
+    # rw 取「见过的最长右半边」，只增不减且按 4 格取整 —— eta 并不是单调变短
+    # 的，"eta 2m" 跳到 "eta 39s" 反而长了一个字，不取整条宽就会中途抖一格。
+    local WFIX=22 rw=0 w=0
     total=$(dl_content_length "$url")
     t0=$(date +%s)
 
@@ -1175,19 +1190,28 @@ dl_with_progress() {
         if [ "$total" -gt 0 ]; then
             pct=$((now * 100 / total))
             [ "$pct" -gt 100 ] && pct=100
+            if [ "$now" -gt 0 ] && [ "$now" -lt "$total" ]; then
+                eta="eta $(fmt_dur $(((total - now) * elapsed / now)))"
+            else eta=""; fi
+
+            # 先定右半边，再拿剩下的空间算条宽 —— 顺序反过来就又变成猜了
+            local r="$spd/s${eta:+  $eta}"
+            # 条最窄留 8 格；右半边真宽到挤掉它，就丢 eta 保速率
+            [ "${#r}" -gt $((UI_IN - WFIX - 8)) ] && r="$spd/s"
+            [ "${#r}" -gt "$rw" ] && rw=${#r}
+            # 按 4 格取整再算。eta 从 "2m" 跳到 "39s" 只差 1 个字，不取整的话
+            # 条宽会跟着抖一格；取整之后整场下载条宽纹丝不动
+            w=$((UI_IN - WFIX - (rw + 3) / 4 * 4))
+            # 取整可能多吃几格，把条压到 8 以下。钳回 8 正好把预算还平：
+            # 左 20+8 + 右 26+2 = 56
+            [ "$w" -lt 8 ] && w=8
+
             f=$((pct * w / 100))
             printf -v bar '%*s' "$f" ''
             bar="${bar// /#}"
             printf -v f '%*s' $((w - f)) ''
             bar="$bar${f// /.}"
-            if [ "$now" -gt 0 ] && [ "$now" -lt "$total" ]; then
-                eta="eta $(fmt_dur $(((total - now) * elapsed / now)))"
-            else eta=""; fi
             TASK_DETAIL[$idx]="$bar $(printf '%3d' $pct)%"
-            # 速率快且 eta 长时两者加起来会撑破框。放不下就丢掉 eta ——
-            # 真到这一步说明慢到 24MB 要下一天，那时候速率才是要看的
-            local r="$spd/s${eta:+  $eta}"
-            [ "${#r}" -gt 18 ] && r="$spd/s"
             TASK_RIGHT[$idx]="$r"
         else
             TASK_DETAIL[$idx]="$(fmt_size "$now")"
