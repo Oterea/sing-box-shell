@@ -743,10 +743,21 @@ UNIT
     core_info "service file written: $SBS_SERVICE"
 }
 
-svc_start() { sudo -n systemctl start "$SBS_UNIT_NAME"; }
+# 起之前先 reset-failed。systemd 默认 10 秒内最多起 5 次（StartLimitBurst=5），
+# 手快连按几下 r 就撞上了 —— 撞上之后单元进 failed，Result=start-limit-hit，
+# 此后连普通 restart 都一直失败，实测必须先 reset-failed 才救得回来。
+# 崩溃循环的保护由 Restart=on-failure + RestartSec=10 提供（10 秒才重试一次，
+# 本来也撞不到这个计数器），不靠它。
+svc_start() {
+    sudo -n systemctl reset-failed "$SBS_UNIT_NAME" 2>/dev/null
+    sudo -n systemctl start "$SBS_UNIT_NAME"
+}
 svc_stop() { sudo -n systemctl stop "$SBS_UNIT_NAME"; }
 svc_status() { sudo -n systemctl status "$SBS_UNIT_NAME" --no-pager; }
-svc_restart() { sudo -n systemctl restart "$SBS_UNIT_NAME"; }
+svc_restart() {
+    sudo -n systemctl reset-failed "$SBS_UNIT_NAME" 2>/dev/null
+    sudo -n systemctl restart "$SBS_UNIT_NAME"
+}
 
 svc_is_active() { systemctl is-active --quiet "$SBS_UNIT_NAME"; }
 
