@@ -188,27 +188,35 @@ ui_logo_render() {
         UI_LOGO+=$'\n'
         return 0
     fi
+    # 相邻两列共用一个颜色，只在色带边界发转义序列。20 列的 logo 分成 10 段，
+    # 肉眼看不出台阶，而字节量减半 —— 动画是常驻的，每秒都要发一遍
+    local band last
     for row in "${UI_ART[@]}"; do
-        col=0
+        col=0 last=-1
         while [ "$col" -lt "$w" ]; do
             ch=${row:col:1}
-            t=$(((col * 1000 / den + ph) % 2000))
-            [ "$t" -gt 1000 ] && t=$((2000 - t))
-            if [ "$t" -lt 500 ]; then
-                r=$((139 + (236 - 139) * t / 500))
-                g=$((92 + (72 - 92) * t / 500))
-                b=$((246 + (153 - 246) * t / 500))
-            else
-                t=$((t - 500))
-                r=$((236 + (251 - 236) * t / 500))
-                g=$((72 + (146 - 72) * t / 500))
-                b=$((153 + (60 - 153) * t / 500))
+            band=$((col / 2))
+            if [ "$band" -ne "$last" ]; then
+                last=$band
+                t=$(((band * 2 * 1000 / den + ph) % 2000))
+                [ "$t" -gt 1000 ] && t=$((2000 - t))
+                if [ "$t" -lt 500 ]; then
+                    r=$((139 + (236 - 139) * t / 500))
+                    g=$((92 + (72 - 92) * t / 500))
+                    b=$((246 + (153 - 246) * t / 500))
+                else
+                    t=$((t - 500))
+                    r=$((236 + (251 - 236) * t / 500))
+                    g=$((72 + (146 - 72) * t / 500))
+                    b=$((153 + (60 - 153) * t / 500))
+                fi
+                if [ "$mode" -eq 24 ]; then
+                    out+=$'\e[38;2;'"$r;$g;$b"'m'
+                else
+                    out+=$'\e[38;5;'"$((16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255)))"'m'
+                fi
             fi
-            if [ "$mode" -eq 24 ]; then
-                out+=$'\e[38;2;'"$r;$g;$b"'m'"$ch"
-            else
-                out+=$'\e[38;5;'"$((16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255)))"'m'"$ch"
-            fi
+            out+="$ch"
             col=$((col + 1))
         done
         out+="$C_RESET"$'\n'
@@ -216,22 +224,32 @@ ui_logo_render() {
     UI_LOGO="$out"$'\n'
 }
 
-ui_build_logo() { ui_logo_render 0; }
-
-# 进菜单时色带流动一遍再定住。只在这一处放动画 —— 菜单平时是「按键才重画」
-# 的快照，常驻动画得另起一个重画循环，既费 CPU 又和阻塞读键打架
-ui_logo_intro() {
-    [ -n "$UI_LOGO" ] || return 0
-    [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ] || return 0
+# 开头把所有相位的帧拼好。空闲动画每拍只是吐一个现成字符串，不做任何算术
+ui_build_logo() {
+    ui_logo_render 0
+    UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0
+    [ -n "${SBS_NO_ANIM:-}" ] && return 0
     [ "$(ui_color_depth)" -gt 0 ] || return 0
-    local ph
-    for ph in $(seq 0 80 2000); do
-        ui_logo_render "$ph"
-        printf '%s%s' "$UI_HOME" "${UI_LOGO//$'\n'/$'\e[K\r\n'}" >&$UI_FD
-        sleep 0.07
+    [ -n "$C_RESET$C_CYAN" ] || return 0
+    local p
+    for p in $(seq 0 80 1999); do
+        ui_logo_render "$p"
+        UI_LOGO_F[${#UI_LOGO_F[@]}]="$UI_LOGO"
     done
+    UI_ANIM=1
     ui_logo_render 0
 }
+
+# 推进一相，只重画 logo 那几行。光标回原点画完就停在 logo 下面，
+# 下一次整帧重画照样从 \e[H 开始，位置不会错
+ui_logo_step() {
+    [ "$UI_ANIM" -eq 1 ] || return 0
+    [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ] || return 0
+    UI_PHASE=$(((UI_PHASE + 1) % ${#UI_LOGO_F[@]}))
+    local f="${UI_LOGO_F[$UI_PHASE]}"
+    printf '%s%s' "$UI_HOME" "${f//$'\n'/$'\e[K\r\n'}" >&$UI_FD
+}
+
 
 # 终端控制
 UI_HIDE=$'\e[?25l'
@@ -252,6 +270,10 @@ UI_FD=2
 # 菜单顶上的 logo：5 行画 + 1 行空，画在框外面。任务视图最高能到 22 行，
 # 加上 logo 就是 28 —— 窗口不够高时干脆不画，否则框会被顶出屏幕
 UI_LOGO='' UI_LOGO_ROWS=6 UI_FRAME_MAX=22
+# 色相动画：开头把每一帧都拼好存起来，之后每拍只是 printf 一个现成的字符串。
+# 空闲时只重画 logo 那 5 行，不碰整帧 —— 整帧重画既贵又会打破「面板是快照」
+# 那条规矩。SBS_NO_ANIM=1 可以关掉
+UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0 UI_ANIM_TICK=0.15
 # 同理存一份终端设置，退出时无条件还回去。我们自己的 read -s 会关回显，
 # sudo（sudoers 里 Defaults use_pty）中继期间还会把终端整个置成 raw ——
 # 它正常退出会还原，但被 esc 取消时是被 kill 掉的，那一步就没跑。留下来的
@@ -450,6 +472,22 @@ ui_read_key() {
     if [ -n "$UI_PENDING" ]; then
         k=${UI_PENDING:0:1}
         UI_PENDING=${UI_PENDING:1}
+    elif [ "$UI_ANIM" -eq 1 ]; then
+        # 开着动画就轮询：每 UI_ANIM_TICK 推进一相，有键立刻返回
+        local rc
+        while true; do
+            IFS= read -rsn1 -t "$UI_ANIM_TICK" k 2>/dev/null && break
+            rc=$?
+            if [ "$UI_WINCH" -eq 1 ]; then
+                UI_KEY=winch
+                return
+            fi
+            if [ "$rc" -le 128 ]; then # 不是超时，是 EOF 或真出错
+                UI_KEY=esc
+                return
+            fi
+            ui_logo_step
+        done
     elif ! IFS= read -rsn1 k 2>/dev/null; then
         # 窗口尺寸变化会用信号打断 read，那不是按了 esc
         if [ "$UI_WINCH" -eq 1 ]; then
@@ -530,6 +568,7 @@ ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
     local pid=$1 draw=$2
     while kill -0 "$pid" 2>/dev/null; do
         UI_TICK=$((UI_TICK + 1))
+        [ "$UI_ANIM" -eq 1 ] && UI_PHASE=$(((UI_PHASE + 1) % ${#UI_LOGO_F[@]}))
         "$draw"
         if ui_tick 0.08; then
             kill "$pid" 2>/dev/null
@@ -1835,7 +1874,9 @@ cli_menu_draw() {
     ui_reset
     # logo 画在框外面。按「最高的那一帧」判断放不放得下，而不是按当前这一帧
     # —— 否则任务视图长出几行时 logo 会突然消失，整个框往上跳
-    [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ] && UI_BUF+="$UI_LOGO"
+    if [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ]; then
+        if [ "$UI_ANIM" -eq 1 ]; then UI_BUF+="${UI_LOGO_F[$UI_PHASE]}"; else UI_BUF+="$UI_LOGO"; fi
+    fi
     ui_menu_header
     ui_sep
 
@@ -1891,7 +1932,6 @@ cli_menu() {
     ui_measure
     # 无论怎么退出（正常 / Ctrl-C / 报错）都要把光标恢复出来
     ui_session_begin
-    ui_logo_intro
     while true; do
         cli_menu_draw
         ui_read_key
