@@ -1146,12 +1146,13 @@ ui_tick() { # $1=这一拍等多久（秒）
     [ -z "$rest" ]
 }
 
-# 后台跑一条命令，同时让 spinner 转起来。返回 130 表示用户按 esc 取消
-task_wait() { # $1=pid
-    local pid=$1
+# 等一个后台进程结束，期间每拍调一次 $2 重画。用户按 esc 就杀掉它返回 130，
+# 否则返回被等进程自己的退出码。任务视图和 footer 单行 spinner 都走这里。
+ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
+    local pid=$1 draw=$2
     while kill -0 "$pid" 2>/dev/null; do
         TASK_TICK=$((TASK_TICK + 1))
-        task_draw
+        "$draw"
         if ui_tick 0.08; then
             kill "$pid" 2>/dev/null
             wait "$pid" 2>/dev/null
@@ -1159,6 +1160,25 @@ task_wait() { # $1=pid
         fi
     done
     wait "$pid"
+}
+
+# 任务视图版：每拍重画整个步骤列表
+task_wait() { ui_wait_pid "$1" task_draw; }
+
+# footer 里转一个 spinner 等命令跑完，不进任务视图。$1=文案 $2..=要跑的命令。
+# 注意命令是在后台子 shell 里跑的，它设的变量传不回来 —— 结果只能走文件或
+# 退出码（net_exit_refresh 写的是 $SBS_IPCACHE，所以没问题）
+SPIN_LABEL=''
+_spin_draw() {
+    foot_reset
+    foot_add "$C_CYAN  ${UI_SPIN[$((TASK_TICK % 4))]}$C_RESET  $C_DIM$SPIN_LABEL$C_RESET" ""
+    cli_menu_draw
+}
+ui_spin() {
+    SPIN_LABEL="$1"
+    shift
+    "$@" &
+    ui_wait_pid $! _spin_draw
 }
 
 # 把步骤列表塞进 footer 区，然后让菜单整体重绘。
@@ -1696,7 +1716,7 @@ hdr_fields() {
 # 用户一按键就作废（见 cli_menu），所以动作后的状态不会显示滞后。
 HDR_LINES='' HDR_TICK=''
 ui_menu_header() {
-    local key="$SECONDS:$UI_REFRESHING" before
+    local key="$SECONDS" before
     if [ "$key" = "$HDR_TICK" ]; then
         UI_BUF+="$HDR_LINES"
         return
@@ -1756,10 +1776,6 @@ _ui_menu_header() {
         printf -v l3c '%s  %s  %s%s' "$C_DIM" "$ip" "$loc" "$C_RESET"
         local agec="$C_DIM$age$C_RESET"
         [ "$age" = stale ] && agec="$C_YELLOW$age$C_RESET"
-        if [ "$UI_REFRESHING" -eq 1 ]; then
-            age="refreshing"
-            agec="$C_CYAN$age$C_RESET"
-        fi
         ui_lr "$l3c" "$agec  "
     else
         ui_lr "$C_DIM  no exit ip yet$C_RESET" ""
@@ -1771,7 +1787,6 @@ _ui_menu_header() {
     fi
 }
 
-UI_REFRESHING=0 # f 键刷新出口 IP 期间置 1，让 header 显示 refreshing
 
 cli_menu_draw() {
     UI_BODY=5 # 9 个动作：2 列 4 行 + q 单独一行
@@ -1826,7 +1841,7 @@ cli_menu() {
         return 0
     fi
 
-    local key
+    local key rc
     # 无论怎么退出（正常 / Ctrl-C / 报错）都要把光标恢复出来
     ui_session_begin
     while true; do
@@ -1863,15 +1878,14 @@ cli_menu() {
             fi
             ;;
         f)
+            ui_spin refreshing net_exit_refresh
+            rc=$?
             foot_reset
-            foot_add "$C_CYAN  ${UI_SPIN[0]}$C_RESET  ${C_DIM}refreshing$C_RESET" ""
-            cli_menu_draw
-            foot_reset
-            if net_exit_refresh; then
-                foot_add "$C_GREEN  refreshed$C_RESET" ""
-            else
-                foot_add "$C_YELLOW  exit ip unavailable$C_RESET" ""
-            fi
+            case "$rc" in
+            0) foot_add "$C_GREEN  refreshed$C_RESET" "" ;;
+            130) foot_add "$C_DIM  cancelled$C_RESET" "" ;;
+            *) foot_add "$C_YELLOW  exit ip unavailable$C_RESET" "" ;;
+            esac
             ;;
         q)
             ui_session_end
