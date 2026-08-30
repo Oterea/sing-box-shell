@@ -701,8 +701,29 @@ kern_replace() { # $1=stage
     mv -f "$1/sing-box" "$SBS_BIN"
 }
 
+# 清掉上次留下的临时文件/目录。安装或自更新中途被杀（断网、SSH 掉线）时，
+# 里面躺着一个几十 MB 的二进制，而各处只删自己那个 $$，不扫就会一直攒。
+# 按 PID 判活，免得误删另一个正在跑的实例
+stage_sweep() { # $1=所在目录 $2=文件名前缀
+    local s pid
+    for s in "$1/$2".*; do
+        [ -e "$s" ] || continue
+        pid="${s#"$1/$2".}"
+        pid="${pid%%.*}"
+        case "$pid" in
+        '' | *[!0-9]*) continue ;;
+        esac
+        kill -0 "$pid" 2>/dev/null && continue
+        # /usr/local/bin 下的半成品要 root 才删得掉。报错一律吞掉 ——
+        # 这函数在任务视图里跑，往 stderr 写一个字都会糊在框上
+        rm -rf "$s" 2>/dev/null || sudo -n rm -rf "$s" 2>/dev/null || true
+    done
+    return 0
+}
+
 kern_stage_new() {
     local d="$SBS_WORK_DIR/.stage.$$"
+    stage_sweep "$SBS_WORK_DIR" ".stage"
     rm -rf "$d"
     mkdir -p "$d" || return 1
     printf '%s\n' "$d"
@@ -886,18 +907,17 @@ ui_session_begin() {
     ui_measure
     UI_STTY=$(stty -g 2>/dev/null </dev/tty) || UI_STTY=""
     exec {UI_FD}>&2 # 复制一份 stderr 归界面专用
-    printf '%s%s%s' "$UI_ALT_ON" "$UI_CLS" "$UI_HIDE" >&$UI_FD
-    # 异常退出也必须把备用屏幕还回去，否则用户停在一块空白画布上。
-    # EXIT 管正常返回和脚本出错；INT / TERM 单独一条，因为 trap 只是执行
-    # 完继续往下跑 —— 被 kill -INT 之后还留在循环里接着画，反而更乱，
-    # 所以还原完直接退出
-    # 三条 trap 都收敛到 ui_session_end，别各抄一份还原逻辑。
-    # 它自己会清 trap，所以正常退出时不会跑第二遍；重复调用也是幂等的。
-    # INT / TERM 要额外 exit：trap 执行完是接着往下跑的，不退出就还留在
-    # 循环里接着画，比不还原更糟
+    # trap 必须装在「进备用屏」之前：信号正好落在两者之间的话就没人还原，
+    # 用户停在一块空白画布上。反过来无害 —— 还没进备用屏就收到信号，那条
+    # \e[?1049l 终端会直接忽略。
+    # 三条都收敛到 ui_session_end，别各抄一份还原逻辑；它自己会清 trap，
+    # 所以正常退出不会跑第二遍，重复调用也幂等。
+    # INT / TERM 要额外 exit —— trap 执行完是接着往下跑的，不退出就还留在
+    # 循环里接着画，比不还原更糟。
     trap ui_session_end EXIT
     trap 'ui_session_end; exit 130' INT TERM
     trap 'UI_WINCH=1' WINCH
+    printf '%s%s%s' "$UI_ALT_ON" "$UI_CLS" "$UI_HIDE" >&$UI_FD
 }
 ui_session_end() {
     UI_IN_MENU=0
@@ -1430,6 +1450,7 @@ task_update_self() {
         return 1
     }
     stage="$(dirname "$SBS_EXEC")/.$(basename "$SBS_EXEC").$$.tmp"
+    stage_sweep "$(dirname "$SBS_EXEC")" ".$(basename "$SBS_EXEC")"
 
     task_step 0
     for base in $(src_script | awk '!seen[$0]++'); do
