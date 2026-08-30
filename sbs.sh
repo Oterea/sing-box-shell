@@ -972,7 +972,9 @@ task_fail() {
 # 在任务视图里跑一条命令：后台执行、spinner 转起来，返回它自己的退出码，
 # 130 表示用户按 esc 取消
 task_run() {
-    "$@" &
+    # 输出必须掐掉：界面是往 stderr 画的，被调命令随便往 stderr 写一行就会
+    # 糊在框上（tar 的报错、systemctl 的提示都会）。任务视图自己会报步骤结果
+    "$@" >/dev/null 2>&1 &
     ui_wait_pid $! task_draw
 }
 
@@ -1517,7 +1519,7 @@ task_install_kernel() { # $1=tag $2=下载地址
         return 1
     fi
     rm -rf "$stage"
-    svc_write_unit >/dev/null 2>&1
+    task_run svc_write_unit # 里头 systemctl daemon-reload 要 435ms，同步会掉 6 帧
     task_ok "$SBS_BIN" "$(fmt_size "$(stat -c %s "$SBS_BIN" 2>/dev/null || echo 0)")"
     svc_is_active && {
         TASK_HINT=("restart to run the new kernel")
