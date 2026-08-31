@@ -18,7 +18,11 @@ set -uo pipefail
 readonly SBS_WORK_DIR="${SBS_WORK_DIR:-$HOME/sing-box}"
 readonly SBS_EXEC="${SBS_EXEC:-/usr/local/bin/sbs}"
 readonly SBS_SERVICE="${SBS_SERVICE:-/etc/systemd/system/sbs.service}"
-readonly SBS_UNIT_NAME="sbs"
+# 单元名必须从 service 文件名推出来，不能另外硬编码一个 —— 覆盖了
+# SBS_SERVICE 却写死 systemctl start sbs 的话，写入和启停就指到两个
+# 不同的单元上了（默认路径下推出来还是 sbs，行为不变）
+SBS_UNIT_NAME="${SBS_SERVICE##*/}"
+readonly SBS_UNIT_NAME="${SBS_UNIT_NAME%.service}"
 readonly SBS_BIN="$SBS_WORK_DIR/sing-box"
 readonly SBS_CONFIG="$SBS_WORK_DIR/config.json"
 readonly SBS_SHARE="$SBS_WORK_DIR/share.txt"
@@ -137,14 +141,17 @@ ui_init_charset() {
     UI_HBAR="${UI_HBAR// /$UI_H}"
     printf -v UI_SPACES '%*s' "$UI_IN" ''
     UI_HINT_C="${C_DIM}enter$C_RESET ok   ${C_DIM}esc$C_RESET cancel  "
-    ui_build_logo
 }
 
-# 大写 SBS，紫 -> 粉 -> 橙横向渐变。开头拼一次，之后每帧直接用。
-# 三档降级：真彩 -> 256 色 -> 无色。真彩看 COLORTERM 而不是 tput ——
-# ncurses 只认 terminfo 里声明的色数，而绝大多数终端的 terminfo 只写到 256
-# 色深：24=真彩 8=256 色 0=不上色。
-# 不能只信 tput —— ssh 不转发 COLORTERM，而服务器上往往没有客户端那套
+# 探测结果：24=真彩 8=256 色 0=不上色。只跟环境变量和 terminfo 有关，
+# 中途不会变，所以开头测一次存下来 —— ui_logo_render 每帧都要用它，
+# 留在那儿就是每帧白搭一个 fork（还可能顺带 exec 一次 tput）
+UI_CDEPTH=0
+
+# 三档降级：真彩 -> 256 色 -> 无色。
+# 真彩看 COLORTERM 而不是 tput —— ncurses 只认 terminfo 里声明的色数，
+# 而绝大多数终端的 terminfo 只写到 256。
+# 也不能只信 tput —— ssh 不转发 COLORTERM，而服务器上往往没有客户端那套
 # terminfo（实测 xterm-ghostty 就没有，tput colors 直接报 unknown terminal），
 # 于是真彩终端会被判成无色。所以再按 TERM 的名字认一遍。
 ui_color_depth() {
@@ -177,16 +184,14 @@ UI_ART=(
     '/____/_____//____/  '
 )
 
-# 拼一帧 logo，结果写 UI_LOGO。$1=相位（0 为静态那帧）。
-# 相位让色带横向流动：t 走到头再折返，所以循环起来是无缝的
-# $1 = 帧号，不是相位。三条时间轴都从它推导
+# 拼一帧 logo，结果写 UI_LOGO。$1 = 帧号，两条时间轴都从它推导：用哪两组
+# 色带、渗到几成，以及呼吸到了哪一档。同一个帧号永远拼出同一张图，所以
+# 拼过的可以直接存起来（见 ui_logo_frame）
 ui_logo_render() {
-    local f=${1:-0} mode row col ch t out='' w=20 den=19
+    local f=${1:-0} row col ch t out='' w=20 den=19
     local band last ri=0 br seg si fr i u oa ob
     local -a SR SG SB
-    mode=$(ui_color_depth)
-    [ -n "$C_RESET$C_CYAN" ] || mode=0
-    if [ "$mode" -eq 0 ]; then
+    if [ "$UI_CDEPTH" -eq 0 ]; then
         printf -v UI_LOGO '%s\n' "${UI_ART[@]}"
         UI_LOGO+=$'\n'
         return 0
@@ -237,7 +242,7 @@ ui_logo_render() {
                 r=$(((SR[si] + (SR[si + 1] - SR[si]) * fr / 1000) * br / 1000))
                 g=$(((SG[si] + (SG[si + 1] - SG[si]) * fr / 1000) * br / 1000))
                 b=$(((SB[si] + (SB[si + 1] - SB[si]) * fr / 1000) * br / 1000))
-                if [ "$mode" -eq 24 ]; then
+                if [ "$UI_CDEPTH" -eq 24 ]; then
                     out+=$'\e[38;2;'"$r;$g;$b"'m'
                 else
                     out+=$'\e[38;5;'"$((16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255)))"'m'
@@ -252,14 +257,16 @@ ui_logo_render() {
     UI_LOGO="$out"$'\n'
 }
 
-# 帧按需拼、拼过就缓存。300 帧一次拼完要 2.4 秒，那是白让人等 ——
-# 只有真看到的帧才会被拼，走一圈之后全在缓存里
+# 定下色深、拼出第 0 帧、决定要不要动。
+# 帧按需拼、拼过就缓存：1350 帧一次拼完要 7 秒，那是白让人等 —— 只有真
+# 看到的帧才会被拼，走一圈之后全在缓存里（约 1.3 MB）
 ui_build_logo() {
-    ui_logo_render 0
+    UI_CDEPTH=0
+    [ -n "$C_RESET$C_CYAN" ] && UI_CDEPTH=$(ui_color_depth)
+    ui_logo_render 0 # 无色时这里出的就是纯文本 logo
     UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0
     [ -n "${SBS_NO_ANIM:-}" ] && return 0
-    [ "$(ui_color_depth)" -gt 0 ] || return 0
-    [ -n "$C_RESET$C_CYAN" ] || return 0
+    [ "$UI_CDEPTH" -gt 0 ] || return 0
     UI_LOGO_F[0]="$UI_LOGO"
     UI_ANIM=1
 }
@@ -308,25 +315,22 @@ UI_FD=2
 # 菜单顶上的 logo：5 行画 + 1 行空，画在框外面。任务视图最高能到 22 行，
 # 加上 logo 就是 28 —— 窗口不够高时干脆不画，否则框会被顶出屏幕
 UI_LOGO='' UI_LOGO_ROWS=6 UI_FRAME_MAX=22
-# 色相动画：开头把每一帧都拼好存起来，之后每拍只是 printf 一个现成的字符串。
-# 空闲时只重画 logo 那 5 行，不碰整帧 —— 整帧重画既贵又会打破「面板是快照」
-# 那条规矩。SBS_NO_ANIM=1 可以关掉
+# 空闲时只重画 logo 那 5 行，不碰整帧 —— 整帧重画既贵，又会打破「面板是
+# 一张快照」那条规矩。SBS_NO_ANIM=1 可以整个关掉
 UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0
-# 0.2 秒一帧。sbs 跑在服务器上，每一帧（约 1000 字节转义序列）都要过 SSH 传到
-# 本地，菜单开着就一直在发 —— 5.1 KB/s。再低呼吸就开始一格一格地蹦
+# 0.2 秒一帧。sbs 跑在服务器上，每帧约 1000 字节转义序列都要过 SSH，菜单
+# 开着就一直在发 —— 5.2 KB/s。渐变够细，相邻色带撞色率 0%，一个转义序列
+# 都压不掉，所以帧率就是带宽的直接倍数。也不能再低：亮度是连续量，帧率
+# 一降呼吸就开始一格一格地蹦
 UI_ANIM_TICK=0.2
-# 两条时间轴，都在最后一帧同时归零 —— 不同时归零的话循环接回起点会跳。
-# 0.2 秒一帧，1350 帧 = 4 分半，九组色带各占 30 秒。
-#   呼吸  f % 30         1350 / 30 = 45，整除（相位偏 UI_BR_IN，第 0 帧最亮）
-#   色带  f*9000/1350    走完回到第 0 组
+# 两条时间轴，都在最后一帧同时归零 —— 不同时归零的话接回起点会跳。
+# 1350 帧 × 0.2 秒 = 4 分半一整圈。
+#   呼吸  f % UI_BREATH      30 帧 = 6 秒，1350 / 30 = 45，整除
+#   色带  f * 9000 / 1350    九组各占 30 秒，走完回到第 0 组
+# 渐变位置本身不动（斜着的），变的只有明暗和色调。
 #
-# 色相流动砍掉了：渐变位置固定（斜着的），只有明暗和色调在变。
-# 呼吸是连续量，只能靠帧率喂：一轮 30 帧、亮度摆幅 300。
-# 换成 1 fps 的话一轮才 6 帧、每档 5%，一秒蹦一格 —— 那个频率正好最容易
-# 被眼睛抓到，看着就是卡。渐变够细，相邻色带撞色率 0%，压不出字节，
-# 帧率就是带宽的直接倍数，5.1 KB/s 认了
-# UI_BR_IN 是吸气占的帧数，剩下的是呼气 —— 快吸 2 秒、慢呼 4 秒，
-# 接近真实呼吸的节律，比对称往返有生气。调大它吸气就变缓
+# UI_BR_IN 是吸气占的帧数，剩下的归呼气 —— 快吸 2 秒、慢呼 4 秒，比对称
+# 往返有生气；调大它吸气就变缓。UI_BR_LO 是最暗那一档，再低深色几组发闷
 UI_BREATH=30 UI_BR_IN=10 UI_BR_LO=700 UI_FRAMES=1350 UI_LOGO_CUR=''
 # 九组停靠点，每组 5 个，轮流慢慢渗过去。同序号的停靠点两两插值，所以中间
 # 任何一刻都是一条完整平滑的渐变，只是整体色调在漂。
@@ -531,42 +535,40 @@ foot_add() { # $1=左 $2=右，都可带色
     FOOT_L+=("$1") FOOT_R+=("${2:-}")
 }
 
-# 读一个键，方向键与回车归一化成名字
-# 读一个键，结果写进 UI_KEY。刻意不做成 $(ui_read_key) —— 命令替换是子 shell，
-# UI_PENDING 回推缓冲存不下来，而且每次按键白搭一个 fork。
-UI_KEY='' UI_PENDING='' UI_INPUT='' SUB_URL=''
-
 # ============================================================ L0 输入与等待原语
 
+# UI_PENDING 是回推缓冲：解析转义序列时多读的字节留在这儿还给下一次调用
+UI_KEY='' UI_PENDING='' UI_INPUT=''
+
+# 读一个键，方向键与回车归一化成名字，结果写进 UI_KEY。刻意不做成
+# $(ui_read_key) —— 命令替换是子 shell，UI_PENDING 存不下来，而且每次按键
+# 白搭一个 fork。
 ui_read_key() {
-    local k rest
+    local k rest rc
     if [ -n "$UI_PENDING" ]; then
         k=${UI_PENDING:0:1}
         UI_PENDING=${UI_PENDING:1}
-    elif [ "$UI_ANIM" -eq 1 ]; then
-        # 开着动画就轮询：每 UI_ANIM_TICK 推进一相，有键立刻返回
-        local rc
+    else
+        # 动画开着就轮询（每拍推进一帧再接着等），关着就一直阻塞。两条路
+        # 只差一个 -t，出口条件是同一套，所以合在一个循环里
         while true; do
-            IFS= read -rsn1 -t "$UI_ANIM_TICK" k 2>/dev/null && break
+            if [ "$UI_ANIM" -eq 1 ]; then
+                IFS= read -rsn1 -t "$UI_ANIM_TICK" k 2>/dev/null && break
+            else
+                IFS= read -rsn1 k 2>/dev/null && break
+            fi
             rc=$?
+            # 窗口尺寸变化会用信号打断 read，那不是按了 esc
             if [ "$UI_WINCH" -eq 1 ]; then
                 UI_KEY=winch
                 return
             fi
-            if [ "$rc" -le 128 ]; then # 不是超时，是 EOF 或真出错
+            if [ "$rc" -le 128 ]; then # 不是被信号打断，是 EOF 或真出错
                 UI_KEY=esc
                 return
             fi
-            ui_logo_step
+            ui_logo_step # 动画关着时是空操作，回去接着阻塞
         done
-    elif ! IFS= read -rsn1 k 2>/dev/null; then
-        # 窗口尺寸变化会用信号打断 read，那不是按了 esc
-        if [ "$UI_WINCH" -eq 1 ]; then
-            UI_KEY=winch
-            return
-        fi
-        UI_KEY=esc
-        return
     fi
     case "$k" in
     '')
@@ -936,6 +938,23 @@ stage_sweep() { # $1=所在目录 $2=文件名前缀
     return 0
 }
 
+# 把拉下来的脚本顶替到 $SBS_EXEC。中转文件放在目标旁边，保证最后一步是
+# 同盘改名 —— 本脚本自己就是 $SBS_EXEC，而 bash 是边读边执行、按字节偏移
+# 续读的：就地覆盖会让它从新内容的行中间接上，把两个版本串起来跑（已实测
+# 复现）。cmd_update_self 和 task_update_self 都走这里，两边各写一遍的时候
+# 连这段注释都抄了两份，而 stage_sweep 只有其中一边记得调
+script_replace() { # $1=新脚本
+    local dir base stage
+    dir=$(dirname "$SBS_EXEC")
+    base=".$(basename "$SBS_EXEC")"
+    stage="$dir/$base.$$.tmp"
+    stage_sweep "$dir" "$base"
+    sudo -n cp "$1" "$stage" && sudo -n chmod 755 "$stage" &&
+        sudo -n mv -f "$stage" "$SBS_EXEC" && return 0
+    sudo -n rm -f "$stage" 2>/dev/null
+    return 1
+}
+
 kern_stage_new() {
     local d="$SBS_WORK_DIR/.stage.$$"
     stage_sweep "$SBS_WORK_DIR" ".stage"
@@ -1145,32 +1164,27 @@ ui_session_end() {
     return 0
 }
 
-# 这两个不能是 local：trap 在函数返回之后才执行，那时 local 已销毁，
+# 不能是 local：trap 在函数返回之后才执行，那时 local 已销毁，
 # set -u 下会报 unbound variable
 _SELF_TMPDIR=""
-_SELF_STAGE=""
 cmd_update_self() {
-    local tmpdir stage
+    local tmpdir
     tmpdir=$(mktemp -d) || {
         core_error "无法创建临时目录"
         return 1
     }
     _SELF_TMPDIR="$tmpdir"
-    # 中转名字放在目标旁边，保证最后一步是同盘改名。
-    # 本脚本自己就是 $SBS_EXEC，而 bash 是边读边执行、按字节偏移续读的：
-    # 就地覆盖会让它从新内容的行中间接上，把两个版本串起来跑（已实测复现）。
-    stage="$(dirname "$SBS_EXEC")/.$(basename "$SBS_EXEC").$$.tmp"
-    _SELF_STAGE="$stage"
-    trap 'rm -rf "${_SELF_TMPDIR:-}" 2>/dev/null; sudo -n rm -f "${_SELF_STAGE:-}" 2>/dev/null' EXIT
+    trap 'rm -rf "${_SELF_TMPDIR:-}" 2>/dev/null' EXIT
 
     script_fetch "$tmpdir/sbs.sh" sbs.sh || return 1
     bash -n "$tmpdir/sbs.sh" || {
         core_error "拉到的脚本语法不合法，放弃更新"
         return 1
     }
-    sudo -n cp "$tmpdir/sbs.sh" "$stage" || return 1
-    sudo -n chmod 755 "$stage" || return 1
-    sudo -n mv -f "$stage" "$SBS_EXEC" || return 1
+    script_replace "$tmpdir/sbs.sh" || {
+        core_error "无法替换 $SBS_EXEC，检查免密 sudo"
+        return 1
+    }
     core_info "sbs 已更新"
 }
 
@@ -1232,13 +1246,6 @@ cmd_status() {
 # 成功 -> 自动回菜单，结果留在菜单底部
 # 失败 -> 停在失败那一步，附一句「下一步怎么办」，等按键
 
-TASK_NAMES=()
-TASK_STATE=()
-TASK_DETAIL=()
-TASK_RIGHT=()
-TASK_HINT=()   # 失败时的说明行
-TASK_CUR=-1
-
 # 只收步骤名。原来还吃「标题」「副标题」两个参数存进 TASK_TITLE / TASK_SUB，
 # 但任务视图并进 footer 之后就没有标题行了，那两个全局写了从没被读过 ——
 # 6 个调用点白传两个参数，还得靠 shift 2 2>/dev/null || shift $# 兜着
@@ -1247,7 +1254,7 @@ task_begin() { # $1.. = 步骤名
     TASK_STATE=()
     TASK_DETAIL=()
     TASK_RIGHT=()
-    TASK_HINT=()
+    TASK_HINT=() # 失败时的说明行
     TASK_CUR=-1
     UI_TICK=0 UI_ANIM_ACC=0
     local n
@@ -1258,6 +1265,10 @@ task_begin() { # $1.. = 步骤名
         TASK_RIGHT+=("")
     done
 }
+
+# 建出空的一套 —— set -u 下这些数组必须先存在。直接借 task_begin 而不是
+# 再抄一遍字段表：抄两份的话以后加字段很容易只改一边
+task_begin
 
 # 进入第 N 步（0 起）
 task_step() {
@@ -1573,6 +1584,8 @@ menu_quick() { # $1=动作函数 $2=成功文案 $3=动作名
 }
 
 # ── 订阅地址：沿用现有 / 输入新的 ──
+SUB_URL=''
+
 # 订阅地址：有旧值先问要不要沿用，要新的就在 footer 里输入
 menu_resolve_sub() {
     local cur host note=""
@@ -1657,15 +1670,13 @@ task_update_config() {
 
 # ── 任务：更新脚本自身 ──
 task_update_self() {
-    local tmpdir stage base ok=0
+    local tmpdir base ok=0
     task_begin fetch check install
     tmpdir=$(mktemp -d) || {
         task_step 0
         task_fail "no temp dir" "cannot create a temp directory"
         return 1
     }
-    stage="$(dirname "$SBS_EXEC")/.$(basename "$SBS_EXEC").$$.tmp"
-    stage_sweep "$(dirname "$SBS_EXEC")" ".$(basename "$SBS_EXEC")"
 
     task_step 0
     for base in $(src_script | awk '!seen[$0]++'); do
@@ -1698,12 +1709,9 @@ task_update_self() {
     fi
     task_ok "syntax ok" ""
 
-    # 本脚本就是 $SBS_EXEC，而 bash 边读边执行、按字节偏移续读。
-    # 就地覆盖会让它从新内容的行中间接上，把两个版本串起来跑，所以必须改名顶替。
     task_step 2
-    if ! sudo -n cp "$tmpdir/sbs.sh" "$stage" || ! sudo -n chmod 755 "$stage" || ! sudo -n mv -f "$stage" "$SBS_EXEC"; then
+    if ! script_replace "$tmpdir/sbs.sh"; then
         task_fail "install failed" "cannot replace $SBS_EXEC" "check sudo -n permissions"
-        sudo -n rm -f "$stage" 2>/dev/null
         rm -rf "$tmpdir"
         return 1
     fi
@@ -2087,7 +2095,8 @@ Usage:
 菜单里的按键:
   k  安装 / 更新内核     c  更新订阅配置
   s  启动   x  停止      r  重启   f  刷新
-  d  卸载全部            q  退出
+  u  更新本脚本          d  卸载全部
+  q  退出
 
 环境变量:
   SBS_PROXY   指定内核下载反代，如 https://gh-proxy.com
@@ -2130,6 +2139,7 @@ cli_dispatch() {
 main() {
     ui_init_colors
     ui_init_charset
+    ui_build_logo # 要等前两个定完颜色才能拼
     core_check_deps || exit 1
     core_ensure_workdir || die "无法创建 $SBS_WORK_DIR"
     cli_dispatch "$@"
