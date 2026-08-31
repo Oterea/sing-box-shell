@@ -35,54 +35,48 @@ ART=(
     '/____/_____//____/  '
 )
 
-# 大写 SBS，紫 -> 粉 -> 橙横向渐变。$1=相位，让色带横向流动；
-# t 走到头折返，所以循环无缝
+# 大写 SBS，橙 -> 粉 -> 紫五段渐变，斜着走（每往下一行整条色带偏一点）。
+# 跟 sbs 菜单里那个同一套画法，只是这里是一次性的，取其中一组色带定住不动。
+# 每两列共用一个颜色：转义序列少一半，肉眼看不出来
+STOPS=(234 88 12 244 63 94 236 72 153 192 38 211 147 51 234)
 logo() {
-    local ph=${1:-0} row col ch t r g b w=20 den=19
+    local row col ch t r g b w=20 den=19 band last ri=0 seg=4 si fr
     if [ "$CMODE" -eq 0 ]; then
         printf '%s\n' "${ART[@]}"
         echo
         return 0
     fi
     for row in "${ART[@]}"; do
-        col=0
+        col=0 last=-1
         while [ "$col" -lt "$w" ]; do
             ch=${row:col:1}
-            t=$(((col * 1000 / den + ph) % 2000))
-            [ "$t" -gt 1000 ] && t=$((2000 - t))
-            if [ "$t" -lt 500 ]; then
-                r=$((139 + (236 - 139) * t / 500))
-                g=$((92 + (72 - 92) * t / 500))
-                b=$((246 + (153 - 246) * t / 500))
-            else
-                t=$((t - 500))
-                r=$((236 + (251 - 236) * t / 500))
-                g=$((72 + (146 - 72) * t / 500))
-                b=$((153 + (60 - 153) * t / 500))
+            band=$((col / 2))
+            if [ "$band" -ne "$last" ]; then
+                last=$band
+                t=$(((band * 2 * 1000 / den + ri * 260) % 2000))
+                [ "$t" -gt 1000 ] && t=$((2000 - t))
+                si=$((t * seg / 1000))
+                [ "$si" -ge "$seg" ] && si=$((seg - 1))
+                fr=$((t * seg - si * 1000))
+                r=$((STOPS[si * 3] + (STOPS[si * 3 + 3] - STOPS[si * 3]) * fr / 1000))
+                g=$((STOPS[si * 3 + 1] + (STOPS[si * 3 + 4] - STOPS[si * 3 + 1]) * fr / 1000))
+                b=$((STOPS[si * 3 + 2] + (STOPS[si * 3 + 5] - STOPS[si * 3 + 2]) * fr / 1000))
+                if [ "$CMODE" -eq 24 ]; then
+                    printf '\033[38;2;%d;%d;%dm' "$r" "$g" "$b"
+                else
+                    printf '\033[38;5;%dm' $((16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255)))
+                fi
             fi
-            if [ "$CMODE" -eq 24 ]; then
-                printf '\033[38;2;%d;%d;%dm%s' "$r" "$g" "$b" "$ch"
-            else
-                printf '\033[38;5;%dm%s' $((16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255))) "$ch"
-            fi
+            printf '%s' "$ch"
             col=$((col + 1))
         done
         printf '%s\n' "$RESET"
+        ri=$((ri + 1))
     done
     echo
 }
 
-# 色带流动一遍再定住
-if [ "$CMODE" -gt 0 ]; then
-    logo 0
-    for ph in $(seq 80 80 2000); do
-        printf '\033[6A'
-        logo "$ph"
-        sleep 0.07
-    done
-    printf '\033[6A'
-fi
-logo 0
+logo
 
 [ -d /usr/local/bin ] || {
     sudo mkdir -p /usr/local/bin && sudo chmod 755 /usr/local/bin
