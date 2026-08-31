@@ -833,14 +833,39 @@ tun_info() {
 
 # 出口 IP 走缓存：菜单要瞬间打开，不能卡在网络请求上。
 # 只在状态可能变化时（启停、看详情）才刷新。
+# 出口 IP 探测源，按优先级往下退。每条是「URL 空格 jq 表达式」—— 各家的字段名
+# 都不一样，取值方式只能跟着源走；表达式固定输出三行：ip / city / country。
+# 原来只有 ipinfo.io 一个，一挂就只剩 "exit ip unavailable"，而脚本源和内核源
+# 本来都是多源带优先级的，唯独这里是单点。
+# 也顺手改成了 https —— 原来写的是 `curl -s ipinfo.io`，没有 scheme，curl 默认
+# 走明文 http。
+# 实测这台机器直连：三家各 4 次全中，1~4 秒。落选的：api.ip.sb 返回 403、
+# ipapi.co 撞 Cloudflare 盾、ipify 与 api.myip.com 连不上、ip-api.com 免费版
+# 只有明文 http。ifconfig.co 压根没有 city 字段，只能给国家，所以排最后 ——
+# 聊胜于无。
+# 注意：服务起着的时候这些请求是走代理出去的，通不通可能跟直连不一样 ——
+# 多源在那种场景下才是真正有用的
+SBS_IP_SOURCES=(
+    'https://ipinfo.io/json .ip // "", .city // "", .country // ""'
+    'https://ipwho.is .ip // "", .city // "", .country_code // ""'
+    'https://ifconfig.co/json .ip // "", "", .country_iso // ""'
+)
+
 net_exit_refresh() {
-    local j ip city country state
-    j=$(curl -s --max-time 8 ipinfo.io 2>/dev/null) || return 1
-    # 一次 jq 取三个字段。原来对同一份 JSON 调了 4 次 jq，还多取一个 org ——
-    # 那个 org 存进缓存又读出来，可消费端只读前三行，一路白走
-    { read -r ip; read -r city; read -r country; } < <(
-        printf '%s' "$j" | jq -r '.ip // "", .city // "", .country // ""' 2>/dev/null
-    )
+    local entry url filter j ip city country state
+    for entry in "${SBS_IP_SOURCES[@]}"; do
+        url=${entry%% *}
+        filter=${entry#* }
+        # 三个都得清 —— 上一家可能只吐出一行，剩下的会留着上一轮的值
+        ip="" city="" country=""
+        j=$(curl -s --connect-timeout 3 --max-time 4 "$url" 2>/dev/null) || continue
+        # 一次 jq 取三个字段。原来对同一份 JSON 调了 4 次 jq，还多取一个 org ——
+        # 那个 org 存进缓存又读出来，可消费端只读前三行，一路白走
+        { read -r ip; read -r city; read -r country; } < <(
+            printf '%s' "$j" | jq -r "$filter" 2>/dev/null
+        )
+        [ -n "$ip" ] && break
+    done
     [ -n "$ip" ] || return 1
     svc_is_active && state=active || state=inactive
     printf '%s|%s|%s|%s\n' "$ip" "${city:+$city, }${country:-}" "$(date +%s)" "$state" >"$SBS_IPCACHE"
