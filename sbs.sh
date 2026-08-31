@@ -211,7 +211,7 @@ ui_logo_render() {
     seg=$((UI_NSTOP - 1))
     br=$(((f + UI_BREATH / 2) % UI_BREATH))
     [ "$br" -gt $((UI_BREATH / 2)) ] && br=$((UI_BREATH - br))
-    br=$((550 + br * 450 / (UI_BREATH / 2)))
+    br=$((UI_BR_LO + br * (1000 - UI_BR_LO) / (UI_BREATH / 2)))
     for row in "${UI_ART[@]}"; do
         col=0 last=-1
         while [ "$col" -lt "$w" ]; do
@@ -302,18 +302,20 @@ UI_LOGO='' UI_LOGO_ROWS=6 UI_FRAME_MAX=22
 # 空闲时只重画 logo 那 5 行，不碰整帧 —— 整帧重画既贵又会打破「面板是快照」
 # 那条规矩。SBS_NO_ANIM=1 可以关掉
 UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0
-# 1 秒一帧。sbs 跑在服务器上，每一帧（约 1000 字节转义序列）都要过 SSH 传到
-# 本地，菜单开着就一直在发。剩下的两层动效都很慢，1 fps 足够 —— 1.0 KB/s
-UI_ANIM_TICK=1
-# 只剩两条时间轴，都在最后一帧同时归零 —— 不同时归零的话循环接回起点会跳。
-# 1 秒一帧，270 帧 = 4 分半，九组色带各占 30 秒。
-#   呼吸  f % 18        270 / 18 = 15，整除（偏半个周期，第 0 帧最亮）
-#   色带  f*9000/270    走完回到第 0 组
+# 0.2 秒一帧。sbs 跑在服务器上，每一帧（约 1000 字节转义序列）都要过 SSH 传到
+# 本地，菜单开着就一直在发 —— 5.1 KB/s。再低呼吸就开始一格一格地蹦
+UI_ANIM_TICK=0.2
+# 两条时间轴，都在最后一帧同时归零 —— 不同时归零的话循环接回起点会跳。
+# 0.2 秒一帧，1350 帧 = 4 分半，九组色带各占 30 秒。
+#   呼吸  f % 30         1350 / 30 = 45，整除（偏半个周期，第 0 帧最亮）
+#   色带  f*9000/1350    走完回到第 0 组
 #
-# 色相流动砍掉了：渐变位置固定（斜着的），只有明暗和色调在慢慢变。
-# 它是三层里唯一撑着帧率下限的 —— 呼吸 18 秒一轮、配色 30 秒一换，1 fps
-# 完全够看。砍掉之后帧率 3.3 -> 1，网络 3.3 -> 1.0 KB/s
-UI_BREATH=18 UI_FRAMES=270 UI_LOGO_CUR=''
+# 色相流动砍掉了：渐变位置固定（斜着的），只有明暗和色调在变。
+# 呼吸是连续量，只能靠帧率喂：一轮 30 帧、亮度摆幅 300，每帧变 2%。
+# 换成 1 fps 的话一轮才 6 帧、每档 5%，一秒蹦一格 —— 那个频率正好最容易
+# 被眼睛抓到，看着就是卡。渐变够细，相邻色带撞色率 0%，压不出字节，
+# 帧率就是带宽的直接倍数，5.1 KB/s 认了
+UI_BREATH=30 UI_BR_LO=700 UI_FRAMES=1350 UI_LOGO_CUR=''
 # 九组停靠点，每组 5 个，轮流慢慢渗过去。同序号的停靠点两两插值，所以中间
 # 任何一刻都是一条完整平滑的渐变，只是整体色调在漂。
 # 顺序按色相排成一个环 —— 蓝 → 靛 → 紫 → 品红 → 红金 → 橙紫 → 紫灰 → 蓝灰
@@ -617,7 +619,7 @@ ui_tick() { # $1=这一拍等多久（秒）
 
 # 动画相位。任务视图和 footer 单行 spinner 共用一个计数器 —— 它不是任务
 # 视图的私产，所以放在这里而不是 TASK_* 那一堆里
-UI_TICK=0
+UI_TICK=0 UI_ANIM_ACC=0
 
 # 等一个后台进程结束，期间每拍调一次 $2 重画。用户按 esc 就杀掉它返回 130，
 # 否则返回被等进程自己的退出码。任务视图和 footer 单行 spinner 都走这里。
@@ -625,10 +627,15 @@ ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
     local pid=$1 draw=$2
     while kill -0 "$pid" 2>/dev/null; do
         UI_TICK=$((UI_TICK + 1))
-        # 任务视图是 0.08 秒一拍，logo 是 1 秒一帧 —— 相位得按墙上时间推，
-        # 一拍一帧的话装个内核回来颜色会凭空跳过去两分钟
-        [ "$UI_ANIM" -eq 1 ] && [ $((UI_TICK % 12)) -eq 0 ] &&
-            UI_PHASE=$(((UI_PHASE + 1) % UI_FRAMES))
+        # 任务视图 0.08 秒一拍、logo 0.2 秒一帧，除不尽，拿个累加器按墙上
+        # 时间对齐（单位 0.01 秒）。一拍一帧的话装个内核回来颜色会凭空快进
+        if [ "$UI_ANIM" -eq 1 ]; then
+            UI_ANIM_ACC=$((UI_ANIM_ACC + 8))
+            while [ "$UI_ANIM_ACC" -ge 20 ]; do
+                UI_ANIM_ACC=$((UI_ANIM_ACC - 20))
+                UI_PHASE=$(((UI_PHASE + 1) % UI_FRAMES))
+            done
+        fi
         "$draw"
         if ui_tick 0.08; then
             kill "$pid" 2>/dev/null
@@ -1230,7 +1237,7 @@ task_begin() { # $1.. = 步骤名
     TASK_RIGHT=()
     TASK_HINT=()
     TASK_CUR=-1
-    UI_TICK=0
+    UI_TICK=0 UI_ANIM_ACC=0
     local n
     for n in "$@"; do
         TASK_NAMES+=("$n")
