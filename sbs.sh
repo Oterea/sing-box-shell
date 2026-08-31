@@ -667,7 +667,7 @@ core_check_deps() {
         command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
     done
     [ -z "$missing" ] && return 0
-    core_error "缺少依赖:$missing，请先安装"
+    core_error "missing dependencies:$missing"
     return 1
 }
 
@@ -677,7 +677,7 @@ core_check_deps() {
 # 拿不到权限就立刻失败，并在进菜单前先探一次。
 core_check_sudo() {
     sudo -n true 2>/dev/null && return 0
-    core_error "需要免密 sudo。先跑一次 sudo -v，或者直接 sudo sbs"
+    core_error "passwordless sudo required - run sudo -v first, or run sbs as root"
     return 1
 }
 
@@ -702,7 +702,7 @@ core_detect_target() {
     s390x) arch=s390x ;;
     ppc64le) arch=ppc64le ;;
     *)
-        core_error "不支持的架构: $machine"
+        core_error "unsupported architecture: $machine"
         return 1
         ;;
     esac
@@ -755,9 +755,9 @@ script_fetch() { # $1=本地目标路径 $2=远端文件名
     for base in $(src_script | awk '!seen[$0]++'); do
         core_info "source: $base"
         curl -fsSL --connect-timeout 5 --retry 2 -o "$dst" "$base/$name" && return 0
-        core_warn "$base 失败，试下一个"
+        core_warn "$base failed, trying the next source"
     done
-    core_error "所有脚本源都失败。可用 SBS_MIRROR=<base-url> 手动指定"
+    core_error "all script sources failed - set SBS_MIRROR=<base-url> to pick one"
     return 1
 }
 
@@ -811,7 +811,7 @@ gh_resolve_tags() {
 
     # atom 窗口太小或拉不到时，落到全量列表
     if [ -z "$stable" ] || [ -z "$beta" ]; then
-        core_warn "atom feed 不足，改用 jsDelivr 版本列表"
+        core_warn "atom feed came up short, falling back to the jsDelivr tag list"
         tags=$(gh_tag_list full)
         [ -z "$stable" ] && stable=$(printf '%s\n' "$tags" | gh_pick_stable)
         [ -z "$beta" ] && beta=$(printf '%s\n' "$tags" | gh_pick_beta)
@@ -1022,17 +1022,17 @@ cfg_url_valid() { case "$1" in http://* | https://*) return 0 ;; *) return 1 ;; 
 # 配置是否可用：二进制在、文件在、语法过
 cfg_check() {
     [ -x "$SBS_BIN" ] || {
-        core_error "sing-box 未安装"
+        core_error "sing-box is not installed"
         return 1
     }
     [ -f "$SBS_CONFIG" ] || {
-        core_error "config.json 不存在"
+        core_error "config.json not found"
         return 1
     }
     local out
     out=$("$SBS_BIN" check -c "$SBS_CONFIG" 2>&1)
     [ -z "$out" ] && return 0
-    core_error "config.json 不合法"
+    core_error "config.json is not valid"
     printf '%s\n' "$out" >&2
     return 1
 }
@@ -1092,7 +1092,7 @@ WantedBy=multi-user.target
 UNIT
 
     [ -f "$SBS_SERVICE" ] || {
-        core_error "写入 $SBS_SERVICE 失败"
+        core_error "cannot write $SBS_SERVICE"
         return 1
     }
     sudo -n systemctl daemon-reload
@@ -1211,7 +1211,7 @@ _SELF_TMPDIR=""
 cmd_update_self() {
     local tmpdir
     tmpdir=$(mktemp -d) || {
-        core_error "无法创建临时目录"
+        core_error "cannot create a temp directory"
         return 1
     }
     _SELF_TMPDIR="$tmpdir"
@@ -1219,14 +1219,14 @@ cmd_update_self() {
 
     script_fetch "$tmpdir/sbs.sh" sbs.sh || return 1
     bash -n "$tmpdir/sbs.sh" || {
-        core_error "拉到的脚本语法不合法，放弃更新"
+        core_error "the downloaded script does not parse - update aborted"
         return 1
     }
     script_replace "$tmpdir/sbs.sh" || {
-        core_error "无法替换 $SBS_EXEC，检查免密 sudo"
+        core_error "cannot replace $SBS_EXEC - check passwordless sudo"
         return 1
     }
-    core_info "sbs 已更新"
+    core_info "sbs updated"
 }
 
 # 只有 start 该关心配置是否有效 —— 配置坏了启动也是白启，不如早点说
@@ -1236,7 +1236,7 @@ cmd_start() {
         svc_wait_tun
         core_info "sing-box started"
     else
-        core_error "启动失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
+        core_error "start failed - journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
         return 1
     fi
 }
@@ -1246,7 +1246,7 @@ cmd_stop() {
     if svc_stop; then
         core_info "sing-box stopped"
     else
-        core_error "停止失败"
+        core_error "stop failed"
         return 1
     fi
 }
@@ -1257,7 +1257,7 @@ cmd_restart() {
         svc_wait_tun
         core_info "sing-box restarted"
     else
-        core_error "重启失败，看日志: journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
+        core_error "restart failed - journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
         return 1
     fi
 }
@@ -2079,7 +2079,7 @@ cli_menu_draw() {
 cli_menu() {
     # 终端太窄画框会折行，比没框还难看；直接退回帮助
     if [ "$UI_COLS" -lt "$UI_W" ]; then
-        core_warn "终端宽度 $UI_COLS 小于 $UI_W，改用命令行模式"
+        core_warn "terminal is $UI_COLS columns, needs $UI_W - falling back to the command line"
         cli_help
         return 0
     fi
@@ -2121,7 +2121,7 @@ cli_menu() {
         u)
             if task_update_self; then
                 ui_session_end
-                core_info "sbs 已更新，重新运行以加载新版本"
+                core_info "sbs updated - run it again to load the new version"
                 return 0
             fi
             ;;
@@ -2150,22 +2150,24 @@ cli_menu() {
 cli_help() {
     cat <<'USAGE'
 Usage:
-  sbs                 进菜单（下面这些之外的操作都在里面）
-  sbs start           启动
-  sbs stop            停止
-  sbs restart         重启
-  sbs status          查看状态
-  sbs update sbs      更新本脚本
+  sbs                 open the menu (everything else lives in there)
+  sbs start           start the service
+  sbs stop            stop the service
+  sbs restart         restart the service
+  sbs status          show status
+  sbs update sbs      update this script
 
-菜单里的按键:
-  k  安装 / 更新内核     c  更新配置（订阅地址或本机文件）
-  s  启动   x  停止      r  重启   f  刷新
-  u  更新本脚本          d  卸载全部
-  q  退出
+Menu keys:
+  k  install / update kernel   c  update config (url or local file)
+  s  start   x  stop           r  restart   f  refresh
+  u  update sbs                d  remove everything
+  q  quit
 
-环境变量:
-  SBS_PROXY   指定内核下载反代，如 https://gh-proxy.com
-  SBS_MIRROR  指定脚本源 base URL
+Environment:
+  SBS_PROXY    mirror for kernel downloads, e.g. https://gh-proxy.com
+  SBS_MIRROR   base URL for script sources
+  SBS_ASCII    set to 1 to force plain ASCII drawing
+  SBS_NO_ANIM  set to 1 to turn the logo animation off
 USAGE
 }
 
@@ -2180,7 +2182,7 @@ cli_dispatch() {
         case "$sub" in
         sbs) cmd_update_self ;;
         *)
-            core_error "未知子命令: update $sub"
+            core_error "unknown subcommand: update $sub"
             cli_help
             return 1
             ;;
@@ -2193,7 +2195,7 @@ cli_dispatch() {
         return 0
         ;;
     *)
-        core_error "未知命令: $cmd"
+        core_error "unknown command: $cmd"
         cli_help
         return 1
         ;;
@@ -2206,7 +2208,7 @@ main() {
     ui_init_charset
     ui_build_logo # 要等前两个定完颜色才能拼
     core_check_deps || exit 1
-    core_ensure_workdir || die "无法创建 $SBS_WORK_DIR"
+    core_ensure_workdir || die "cannot create $SBS_WORK_DIR"
     cli_dispatch "$@"
 }
 

@@ -81,7 +81,7 @@ logo
 [ -d /usr/local/bin ] || {
     sudo mkdir -p /usr/local/bin && sudo chmod 755 /usr/local/bin
 } || {
-    printf '  %s✗%s  无法创建 /usr/local/bin\n' "$RED" "$RESET"
+    printf '  %s✗%s  cannot create /usr/local/bin\n' "$RED" "$RESET"
     exit 1
 }
 
@@ -97,7 +97,7 @@ https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main
 
 # 下载放独占的临时目录，不碰用户当前目录（curl -o 会静默覆盖同名文件）
 tmpdir=$(mktemp -d) || {
-    printf '  %s✗%s  无法创建临时目录\n' "$RED" "$RESET"
+    printf '  %s✗%s  cannot create a temp directory\n' "$RED" "$RESET"
     exit 1
 }
 # 落位用的中转名字，放在目标旁边以保证同一文件系统 —— 这样最后一步一定是真改名
@@ -120,8 +120,8 @@ for base in ${SBS_MIRROR:-$script_sources}; do
 done
 
 if [ "$ok" -ne 1 ]; then
-    printf '  %s✗%s  所有源都拉不到\n' "$RED" "$RESET"
-    printf '     %s可用 SBS_MIRROR=<base-url> 手动指定%s\n' "$DIM" "$RESET"
+    printf '  %s✗%s  all sources failed\n' "$RED" "$RESET"
+    printf '     %sset SBS_MIRROR=<base-url> to pick one%s\n' "$DIM" "$RESET"
     exit 1
 fi
 
