@@ -964,15 +964,50 @@ kern_stage_new() {
 }
 
 # ============================================================ L2 配置
-cfg_url_get() {
+# 记住配置是从哪儿来的，下次按 c 可以直接沿用。值可能是订阅地址，也可能是
+# 这台机器上的一个路径，所以两个键分开写 —— 纯粹是为了 share.txt 被人打开
+# 时读得通。config_url 是历史键名，老装机的 share.txt 里就是它，不能改
+cfg_src_get() {
     [ -f "$SBS_SHARE" ] || return 1
-    local url
-    url=$(sed -n 's/^config_url=//p' "$SBS_SHARE" | tail -n 1 | tr -d '"')
-    [ -n "$url" ] || return 1
-    printf '%s\n' "$url"
+    local v
+    v=$(sed -n 's/^config_url=//p;s/^config_path=//p' "$SBS_SHARE" | tail -n 1 | tr -d '"')
+    [ -n "$v" ] || return 1
+    printf '%s\n' "$v"
 }
 
-cfg_url_set() { printf 'config_url="%s"\n' "$1" >"$SBS_SHARE"; }
+cfg_src_set() { # $1=订阅地址或本地路径
+    if cfg_url_valid "$1"; then
+        printf 'config_url="%s"\n' "$1" >"$SBS_SHARE"
+    else
+        printf 'config_path="%s"\n' "$1" >"$SBS_SHARE"
+    fi
+}
+
+# 来源的短显示：地址只留主机名，本地路径只留文件名 —— 框里那点宽度花在
+# https:// 和一长串目录上，不如让人一眼认出是哪一个
+cfg_src_short() { # $1=来源
+    local v="$1"
+    if cfg_url_valid "$v"; then
+        v="${v#*://}"
+        printf '%s\n' "${v%%/*}"
+    else
+        printf '%s\n' "${v##*/}"
+    fi
+}
+
+# 展开 ~ 再转成绝对路径。存下来的必须是绝对路径 —— 相对路径记住了也没用，
+# 下次从别的目录进菜单就找不着了。readlink -f 顺带解掉 .. 和符号链接；
+# 路径不存在时它失败，那就原样返回，交给调用方去报「找不到」
+cfg_path_norm() { # $1=用户敲进来的路径
+    local p="$1"
+    # shellcheck disable=SC2088  # 这里要匹配的就是字面量 ~：它是用户敲进
+    # 输入框的一个字符，read 读回来的东西 shell 不会做波浪号展开
+    case "$p" in
+    "~") p="$HOME" ;;
+    "~/"*) p="$HOME/${p#"~/"}" ;;
+    esac
+    readlink -f "$p" 2>/dev/null || printf '%s\n' "$p"
+}
 
 # 配置里有几个真正的出站节点（排除 direct/block 与分组类）
 # 数任意配置文件里的节点
@@ -1002,9 +1037,15 @@ cfg_check() {
     return 1
 }
 
-# 拉订阅到临时文件。订阅地址是用户自己的服务，不走反代
-cfg_download() { # $1=url $2=目标临时文件
-    curl -fL --connect-timeout 5 --max-time 60 --retry 2 -s -o "$2" "$1"
+# 把配置取到临时文件。远程订阅走 curl（那是用户自己的服务，不走反代），
+# 本地文件直接拷一份。两种来源的差异到此为止 —— 往后的校验、备份、落盘
+# 完全共用一条路
+cfg_obtain() { # $1=来源（订阅地址或本地路径） $2=目标临时文件
+    if cfg_url_valid "$1"; then
+        curl -fL --connect-timeout 5 --max-time 60 --retry 2 -s -o "$2" "$1"
+    else
+        cp -f "$1" "$2"
+    fi
 }
 
 # 校验一份配置文件；不合法时把 sing-box 的原始输出打到 stdout
@@ -1583,26 +1624,43 @@ menu_quick() { # $1=动作函数 $2=成功文案 $3=动作名
     return 1
 }
 
-# ── 订阅地址：沿用现有 / 输入新的 ──
-SUB_URL=''
+# ── 配置来源：订阅地址 / 这台机器上的文件 ──
+CFG_SRC=''
 
-# 订阅地址：有旧值先问要不要沿用，要新的就在 footer 里输入
-menu_resolve_sub() {
-    local cur host note=""
-    cur=$(cfg_url_get 2>/dev/null) || cur=""
+# 定下这次从哪儿取配置，结果写 CFG_SRC。有旧来源就先问要不要沿用。
+# 三个选项是一步问完的（不是先问「换不换」再问「换成哪种」）—— ui_choose
+# 本来就支持 N 项，而三项加起来 24 列，可用 29 列，塞得下
+menu_resolve_src() {
+    local cur note="" local_file=0 p
+    cur=$(cfg_src_get 2>/dev/null) || cur=""
     if [ -n "$cur" ]; then
-        # 这点宽度别浪费在 https:// 和 query 上，主机名才认得出是哪个订阅
-        host="${cur#*://}"
-        host="${host%%/*}"
-        ui_choose "subscription  $host" "keep it" "enter a new one" || return 1
-        if [ "$UI_CHOICE" -eq 0 ]; then
-            SUB_URL="$cur"
+        ui_choose "config  $(cfg_src_short "$cur")" "keep it" "new url" "local file" || return 1
+        case "$UI_CHOICE" in
+        0)
+            CFG_SRC="$cur"
             return 0
-        fi
-        # 明确选了「输入新的」就别再用旧地址预填。输入框只有退格没有光标移动，
-        # 预填一条 80 字的旧地址等于逼人连按 80 下退格 —— 而实际发生的是新地址
+            ;;
+        2) local_file=1 ;;
+        esac
+        # 明确选了换一个就别再用旧值预填。输入框只有退格没有光标移动，预填
+        # 一条 80 字的旧地址等于逼人连按 80 下退格 —— 而实际发生的是新地址
         # 被直接拼在旧地址屁股后面，拼出个不存在的 URL
         cur=""
+    else
+        ui_choose "config from" "url" "local file" || return 1
+        local_file=$UI_CHOICE
+    fi
+
+    if [ "$local_file" -eq 1 ]; then
+        while true; do
+            ui_input "path on this server" "$cur" "$note" || return 1
+            p=$(cfg_path_norm "$UI_INPUT")
+            [ -f "$p" ] && [ -r "$p" ] && break
+            cur="$UI_INPUT"
+            note="no readable file there"
+        done
+        CFG_SRC="$p"
+        return 0
     fi
 
     while true; do
@@ -1612,20 +1670,22 @@ menu_resolve_sub() {
         cur="$UI_INPUT"
         note="url must start with http://"
     done
-    SUB_URL="$UI_INPUT"
+    CFG_SRC="$UI_INPUT"
 }
 
 
 # ── 任务：更新订阅配置 ──
 task_update_config() {
-    local sub tmp out had
-    menu_resolve_sub || return 0 # 取消不算失败
-    sub="$SUB_URL"
-    task_begin fetch validate save
+    local src tmp out had step0=fetch
+    menu_resolve_src || return 0 # 取消不算失败
+    src="$CFG_SRC"
+    # 本地文件是「拷」不是「取」，步骤名跟着来源走
+    cfg_url_valid "$src" || step0=copy
+    task_begin "$step0" validate save
     tmp="$SBS_WORK_DIR/.config.$$.json"
 
-    task_step 0 "$(ui_fit "$sub" 38)"
-    task_run cfg_download "$sub" "$tmp"
+    task_step 0 "$(ui_fit "$src" 38)"
+    task_run cfg_obtain "$src" "$tmp"
     case $? in
     0) ;;
     130)
@@ -1633,8 +1693,13 @@ task_update_config() {
         return 130
         ;;
     *)
-        task_fail "download failed" "cannot fetch the subscription - config unchanged" \
-            "check the URL and the network"
+        if [ "$step0" = copy ]; then
+            task_fail "copy failed" "cannot read the file - config unchanged" \
+                "check the path and that it is readable"
+        else
+            task_fail "download failed" "cannot fetch the subscription - config unchanged" \
+                "check the URL and the network"
+        fi
         rm -f "$tmp"
         return 1
         ;;
@@ -1656,9 +1721,9 @@ task_update_config() {
         rm -f "$tmp"
         return 1
     }
-    # 落地成功才记住地址，下次按 c 就能直接沿用。
+    # 落地成功才记住来源，下次按 c 就能直接沿用。
     # 这行原来只在 CLI 版里有，菜单版一直漏着 —— 表现是每次都要重新粘贴整条 URL
-    cfg_url_set "$sub"
+    cfg_src_set "$src"
     task_ok "${had:+backup kept}" ""
     # 步骤全绿本身就是结果，不再另起一行。只在需要重启才生效时补一句
     svc_is_active && {
@@ -2093,7 +2158,7 @@ Usage:
   sbs update sbs      更新本脚本
 
 菜单里的按键:
-  k  安装 / 更新内核     c  更新订阅配置
+  k  安装 / 更新内核     c  更新配置（订阅地址或本机文件）
   s  启动   x  停止      r  重启   f  刷新
   u  更新本脚本          d  卸载全部
   q  退出
