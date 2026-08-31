@@ -1,7 +1,10 @@
 #!/bin/bash
 # sing-box-shell 安装器。把 sbs.sh 取回来放到 /usr/local/bin/sbs。
+set -u
 
-exec="/usr/local/bin/sbs"
+# 目标路径可覆盖：没有 sudo 的机器可以装到 ~/.local/bin，跟 sbs 自己认的
+# 那个环境变量同名，两边一致
+exec="${SBS_EXEC:-/usr/local/bin/sbs}"
 
 # ── 配色 ──────────────────────────────────────────────────────────
 # 三档：真彩 -> 256 色 -> 无色。真彩看 COLORTERM 而不是 tput —— ncurses 只认
@@ -26,6 +29,28 @@ if [ "$CMODE" -gt 0 ]; then
 else
     DIM='' GREEN='' RED='' BOLD='' RESET=''
 fi
+
+# 符号集。跟 sbs 一样按 locale 降级 —— 非 UTF-8 终端上 ✓ ✗ · 会变成乱码。
+# 原来这三个是无条件输出的
+if [ -n "${SBS_ASCII:-}" ] || [ "${TERM:-}" = linux ]; then
+    ascii=1
+else
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *[Uu][Tt][Ff]*8* | *[Uu][Tt][Ff]8*) ascii=0 ;;
+    *) ascii=1 ;;
+    esac
+fi
+if [ "$ascii" -eq 1 ]; then
+    OK='+' BAD='x' DOT='*'
+else
+    OK='✓' BAD='✗' DOT='·'
+fi
+
+die() { # $1=第一行 $2=可选的第二行（缩进、暗色）
+    printf '  %s%s%s  %s\n' "$RED" "$BAD" "$RESET" "$1" >&2
+    [ $# -gt 1 ] && printf '     %s%s%s\n' "$DIM" "$2" "$RESET" >&2
+    exit 1
+}
 
 ART=(
     '   _____ ____  _____'
@@ -78,11 +103,27 @@ logo() {
 
 logo
 
-[ -d /usr/local/bin ] || {
-    sudo mkdir -p /usr/local/bin && sudo chmod 755 /usr/local/bin
-} || {
-    printf '  %s✗%s  cannot create /usr/local/bin\n' "$RED" "$RESET"
-    exit 1
+command -v curl >/dev/null 2>&1 ||
+    die "curl not found" "install curl first, then run this again"
+
+dir=$(dirname "$exec")
+need_sudo() {
+    command -v sudo >/dev/null 2>&1 ||
+        die "no write access to $dir" "run as root, or set SBS_EXEC=~/.local/bin/sbs"
+}
+# 目录不在就先自己建，建不动才请 sudo。已存在的目录一个字都不改 ——
+# 顺手 chmod 一个不属于自己的 /usr/local/bin 只会平白失败
+if [ ! -d "$dir" ]; then
+    mkdir -p "$dir" 2>/dev/null || {
+        need_sudo
+        sudo mkdir -p "$dir" && sudo chmod 755 "$dir" || die "cannot create $dir"
+    }
+fi
+# 目标目录本来就可写就别惊动 sudo —— root，或者装到 ~/.local/bin 这类地方
+SUDO=""
+[ -w "$dir" ] || {
+    SUDO=sudo
+    need_sudo
 }
 
 # 脚本源，按优先级排列。SBS_MIRROR 可覆盖（只用指定的那个）。
@@ -96,15 +137,13 @@ https://testingcf.jsdelivr.net/gh/Oterea/sing-box-shell@main
 "
 
 # 下载放独占的临时目录，不碰用户当前目录（curl -o 会静默覆盖同名文件）
-tmpdir=$(mktemp -d) || {
-    printf '  %s✗%s  cannot create a temp directory\n' "$RED" "$RESET"
-    exit 1
-}
+tmpdir=$(mktemp -d) || die "cannot create a temp directory"
 # 落位用的中转名字，放在目标旁边以保证同一文件系统 —— 这样最后一步一定是真改名
-stage="$(dirname "$exec")/.$(basename "$exec").$$.tmp"
+stage="$dir/.$(basename "$exec").$$.tmp"
 cleanup() {
     rm -rf "$tmpdir"
-    sudo rm -f "$stage" 2>/dev/null
+    # 收尾不该弹密码框，用 -n；凭据几秒前刚用过，正常都还在缓存里
+    ${SUDO:+sudo -n} rm -f "$stage" 2>/dev/null
 }
 trap cleanup EXIT # 正常结束、报错、Ctrl-C 都会清
 
@@ -112,24 +151,33 @@ ok=0
 for base in ${SBS_MIRROR:-$script_sources}; do
     host=${base#https://}
     host=${host%%/*}
-    printf '  %s·  %s%s\n' "$DIM" "$host" "$RESET"
-    if curl -fsSL --connect-timeout 5 --retry 2 -o "$tmpdir/sbs.sh" "$base/sbs.sh"; then
+    printf '  %s%s  %s%s\n' "$DIM" "$DOT" "$host" "$RESET"
+    # --max-time：只有 --connect-timeout 的话，连上之后卡住会一直挂着
+    if curl -fsSL --connect-timeout 5 --max-time 60 --retry 2 \
+        -o "$tmpdir/sbs.sh" "$base/sbs.sh"; then
         ok=1
         break
     fi
+    # 失败的源也留个结论在屏上，不然只剩一串没有下文的主机名
+    printf '  %s%s  %s  unreachable%s\n' "$DIM" "$BAD" "$host" "$RESET"
 done
+[ "$ok" -eq 1 ] || die "all sources failed" "set SBS_MIRROR=<base-url> to pick one"
 
-if [ "$ok" -ne 1 ]; then
-    printf '  %s✗%s  all sources failed\n' "$RED" "$RESET"
-    printf '     %sset SBS_MIRROR=<base-url> to pick one%s\n' "$DIM" "$RESET"
-    exit 1
-fi
+# 装之前先验一遍。curl -f 只看 HTTP 状态码 —— CDN 返回一个 200 的错误页、
+# 或者传输被截断，它都不会报错，而装上半截脚本比没装还糟。
+# 不认函数名之类的标记，那种检查会在改名重构时莫名其妙地失效
+head -c 2 "$tmpdir/sbs.sh" | grep -q '^#!' ||
+    die "what came back is not a script" "the source may have returned an error page"
+[ "$(wc -c <"$tmpdir/sbs.sh")" -gt 10000 ] ||
+    die "the download looks truncated" "got only $(wc -c <"$tmpdir/sbs.sh") bytes"
+bash -n "$tmpdir/sbs.sh" 2>/dev/null ||
+    die "the downloaded script does not parse" "nothing was installed"
 
 # 先复制到中转名字（全新名字，没有进程在用，覆盖它是安全的）
-sudo cp "$tmpdir/sbs.sh" "$stage" || exit 1
-sudo chmod 755 "$stage" || exit 1
+$SUDO cp "$tmpdir/sbs.sh" "$stage" || die "cannot write $stage"
+$SUDO chmod 755 "$stage" || die "cannot chmod $stage"
 # 再改名顶替。同盘 rename，原子；正在运行的旧脚本仍持有旧 inode，不会被读串
-sudo mv -f "$stage" "$exec" || exit 1
+$SUDO mv -f "$stage" "$exec" || die "cannot replace $exec"
 
-printf '  %s✓%s  installed to %s\n' "$GREEN" "$RESET" "$exec"
+printf '  %s%s%s  installed to %s\n' "$GREEN" "$OK" "$RESET" "$exec"
 printf '     %srun%s %ssbs%s %sto get started%s\n' "$DIM" "$RESET" "$BOLD" "$RESET" "$DIM" "$RESET"
