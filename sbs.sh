@@ -180,7 +180,8 @@ UI_ART=(
 # 拼一帧 logo，结果写 UI_LOGO。$1=相位（0 为静态那帧）。
 # 相位让色带横向流动：t 走到头再折返，所以循环起来是无缝的
 ui_logo_render() {
-    local ph=${1:-0} mode row col ch t r g b out='' w=20 den=19
+    local ph=${1:-0} mode row col ch t out='' w=20 den=19
+    local band last ri=0 br seg si f r g b r1 g1 b1 r2 g2 b2
     mode=$(ui_color_depth)
     [ -n "$C_RESET$C_CYAN" ] || mode=0
     if [ "$mode" -eq 0 ]; then
@@ -188,9 +189,11 @@ ui_logo_render() {
         UI_LOGO+=$'\n'
         return 0
     fi
-    # 相邻两列共用一个颜色，只在色带边界发转义序列。20 列的 logo 分成 10 段，
-    # 肉眼看不出台阶，而字节量减半 —— 动画是常驻的，每秒都要发一遍
-    local band last
+    seg=$((${#UI_STOPS[@]} - 1))
+    # 呼吸：整体亮度在 55%~100% 之间起伏
+    br=$((ph % 4000))
+    [ "$br" -gt 2000 ] && br=$((4000 - br))
+    br=$((550 + br * 450 / 2000))
     for row in "${UI_ART[@]}"; do
         col=0 last=-1
         while [ "$col" -lt "$w" ]; do
@@ -198,18 +201,19 @@ ui_logo_render() {
             band=$((col / 2))
             if [ "$band" -ne "$last" ]; then
                 last=$band
-                t=$(((band * 2 * 1000 / den + ph) % 2000))
+                # 斜向：相位同时受列和行影响，色带斜着扫过去
+                t=$(((band * 2 * 1000 / den + ri * 260 + ph) % 2000))
                 [ "$t" -gt 1000 ] && t=$((2000 - t))
-                if [ "$t" -lt 500 ]; then
-                    r=$((139 + (236 - 139) * t / 500))
-                    g=$((92 + (72 - 92) * t / 500))
-                    b=$((246 + (153 - 246) * t / 500))
-                else
-                    t=$((t - 500))
-                    r=$((236 + (251 - 236) * t / 500))
-                    g=$((72 + (146 - 72) * t / 500))
-                    b=$((153 + (60 - 153) * t / 500))
-                fi
+                si=$((t * seg / 1000))
+                [ "$si" -ge "$seg" ] && si=$((seg - 1))
+                f=$((t * seg - si * 1000))
+                set -- ${UI_STOPS[$si]}
+                r1=$1 g1=$2 b1=$3
+                set -- ${UI_STOPS[$((si + 1))]}
+                r2=$1 g2=$2 b2=$3
+                r=$(((r1 + (r2 - r1) * f / 1000) * br / 1000))
+                g=$(((g1 + (g2 - g1) * f / 1000) * br / 1000))
+                b=$(((b1 + (b2 - b1) * f / 1000) * br / 1000))
                 if [ "$mode" -eq 24 ]; then
                     out+=$'\e[38;2;'"$r;$g;$b"'m'
                 else
@@ -220,24 +224,32 @@ ui_logo_render() {
             col=$((col + 1))
         done
         out+="$C_RESET"$'\n'
+        ri=$((ri + 1))
     done
     UI_LOGO="$out"$'\n'
 }
 
-# 开头把所有相位的帧拼好。空闲动画每拍只是吐一个现成字符串，不做任何算术
+# 帧按需拼、拼过就缓存。50 帧一次拼完要 200ms，那是白让人等 ——
+# 走一圈之后全在缓存里，之后每拍只是吐一个现成字符串
 ui_build_logo() {
     ui_logo_render 0
     UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0
     [ -n "${SBS_NO_ANIM:-}" ] && return 0
     [ "$(ui_color_depth)" -gt 0 ] || return 0
     [ -n "$C_RESET$C_CYAN" ] || return 0
-    local p
-    for p in $(seq 0 80 1999); do
-        ui_logo_render "$p"
-        UI_LOGO_F[${#UI_LOGO_F[@]}]="$UI_LOGO"
-    done
+    UI_LOGO_F[0]="$UI_LOGO"
     UI_ANIM=1
-    ui_logo_render 0
+}
+
+# 取第 $1 相的帧放进 UI_LOGO_CUR，没拼过就现拼并存下来。
+# 不用 $(...) 返回 —— 命令替换既吞掉末尾换行（那行空行就没了），又白搭一次 fork
+ui_logo_frame() {
+    local i=$1
+    if [ -z "${UI_LOGO_F[$i]:-}" ]; then
+        ui_logo_render $((i * UI_PH_STEP))
+        UI_LOGO_F[$i]="$UI_LOGO"
+    fi
+    UI_LOGO_CUR="${UI_LOGO_F[$i]}"
 }
 
 # 推进一相，只重画 logo 那几行。光标回原点画完就停在 logo 下面，
@@ -245,9 +257,9 @@ ui_build_logo() {
 ui_logo_step() {
     [ "$UI_ANIM" -eq 1 ] || return 0
     [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ] || return 0
-    UI_PHASE=$(((UI_PHASE + 1) % ${#UI_LOGO_F[@]}))
-    local f="${UI_LOGO_F[$UI_PHASE]}"
-    printf '%s%s' "$UI_HOME" "${f//$'\n'/$'\e[K\r\n'}" >&$UI_FD
+    UI_PHASE=$(((UI_PHASE + 1) % (UI_PH_MAX / UI_PH_STEP)))
+    ui_logo_frame "$UI_PHASE"
+    printf '%s%s' "$UI_HOME" "${UI_LOGO_CUR//$'\n'/$'\e[K\r\n'}" >&$UI_FD
 }
 
 
@@ -274,6 +286,12 @@ UI_LOGO='' UI_LOGO_ROWS=6 UI_FRAME_MAX=22
 # 空闲时只重画 logo 那 5 行，不碰整帧 —— 整帧重画既贵又会打破「面板是快照」
 # 那条规矩。SBS_NO_ANIM=1 可以关掉
 UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0 UI_ANIM_TICK=0.15
+# 色相周期 2000，呼吸周期 4000（正好两倍）—— 不成整数倍的话，循环接回起点
+# 时明暗会跳一下。总周期 4000，步长 80，共 50 帧
+UI_PH_STEP=80 UI_PH_MAX=4000 UI_LOGO_CUR=''
+# 渐变停靠点：紫 -> 品红 -> 浅粉 -> 橙 -> 浅黄。都在暖色区，相邻色差小，
+# 流动起来比跨度大的色带丝滑
+UI_STOPS=('168 85 247' '236 72 153' '244 114 182' '251 146 60' '253 224 71')
 # 同理存一份终端设置，退出时无条件还回去。我们自己的 read -s 会关回显，
 # sudo（sudoers 里 Defaults use_pty）中继期间还会把终端整个置成 raw ——
 # 它正常退出会还原，但被 esc 取消时是被 kill 掉的，那一步就没跑。留下来的
@@ -568,7 +586,7 @@ ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
     local pid=$1 draw=$2
     while kill -0 "$pid" 2>/dev/null; do
         UI_TICK=$((UI_TICK + 1))
-        [ "$UI_ANIM" -eq 1 ] && UI_PHASE=$(((UI_PHASE + 1) % ${#UI_LOGO_F[@]}))
+        [ "$UI_ANIM" -eq 1 ] && UI_PHASE=$(((UI_PHASE + 1) % (UI_PH_MAX / UI_PH_STEP)))
         "$draw"
         if ui_tick 0.08; then
             kill "$pid" 2>/dev/null
@@ -1875,7 +1893,12 @@ cli_menu_draw() {
     # logo 画在框外面。按「最高的那一帧」判断放不放得下，而不是按当前这一帧
     # —— 否则任务视图长出几行时 logo 会突然消失，整个框往上跳
     if [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ]; then
-        if [ "$UI_ANIM" -eq 1 ]; then UI_BUF+="${UI_LOGO_F[$UI_PHASE]}"; else UI_BUF+="$UI_LOGO"; fi
+        if [ "$UI_ANIM" -eq 1 ]; then
+            ui_logo_frame "$UI_PHASE"
+            UI_BUF+="$UI_LOGO_CUR"
+        else
+            UI_BUF+="$UI_LOGO"
+        fi
     fi
     ui_menu_header
     ui_sep
