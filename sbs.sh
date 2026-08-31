@@ -179,9 +179,11 @@ UI_ART=(
 
 # 拼一帧 logo，结果写 UI_LOGO。$1=相位（0 为静态那帧）。
 # 相位让色带横向流动：t 走到头再折返，所以循环起来是无缝的
+# $1 = 帧号，不是相位。三条时间轴都从它推导
 ui_logo_render() {
-    local ph=${1:-0} mode row col ch t out='' w=20 den=19
-    local band last ri=0 br seg si f r g b r1 g1 b1 r2 g2 b2
+    local f=${1:-0} mode row col ch t out='' w=20 den=19
+    local band last ri=0 br seg si fr i u oa ob
+    local -a SR SG SB
     mode=$(ui_color_depth)
     [ -n "$C_RESET$C_CYAN" ] || mode=0
     if [ "$mode" -eq 0 ]; then
@@ -189,8 +191,24 @@ ui_logo_render() {
         UI_LOGO+=$'\n'
         return 0
     fi
-    seg=$((${#UI_STOPS[@]} - 1))
-    # 呼吸：整体亮度在 55%~100% 之间起伏
+
+    # 这一帧用哪两组色带、渗到几成
+    u=$((f * 3000 / UI_FRAMES))
+    oa=$((u / 1000 * UI_PALSZ))
+    ob=$(((u / 1000 + 1) % 3 * UI_PALSZ))
+    u=$((u % 1000))
+    # 5 个有效停靠点先算好放进并行数组。原来每个色带都要 set -- 拆一次词，
+    # 一帧 50 次 —— 那是渲染里最贵的一处
+    i=0
+    while [ "$i" -lt "$UI_NSTOP" ]; do
+        SR[i]=$((UI_PALS[oa + i * 3] + (UI_PALS[ob + i * 3] - UI_PALS[oa + i * 3]) * u / 1000))
+        SG[i]=$((UI_PALS[oa + i * 3 + 1] + (UI_PALS[ob + i * 3 + 1] - UI_PALS[oa + i * 3 + 1]) * u / 1000))
+        SB[i]=$((UI_PALS[oa + i * 3 + 2] + (UI_PALS[ob + i * 3 + 2] - UI_PALS[oa + i * 3 + 2]) * u / 1000))
+        i=$((i + 1))
+    done
+
+    local ph=$((f * UI_PH_STEP)) r g b
+    seg=$((UI_NSTOP - 1))
     br=$((ph % 4000))
     [ "$br" -gt 2000 ] && br=$((4000 - br))
     br=$((550 + br * 450 / 2000))
@@ -201,19 +219,14 @@ ui_logo_render() {
             band=$((col / 2))
             if [ "$band" -ne "$last" ]; then
                 last=$band
-                # 斜向：相位同时受列和行影响，色带斜着扫过去
                 t=$(((band * 2 * 1000 / den + ri * 260 + ph) % 2000))
                 [ "$t" -gt 1000 ] && t=$((2000 - t))
                 si=$((t * seg / 1000))
                 [ "$si" -ge "$seg" ] && si=$((seg - 1))
-                f=$((t * seg - si * 1000))
-                set -- ${UI_STOPS[$si]}
-                r1=$1 g1=$2 b1=$3
-                set -- ${UI_STOPS[$((si + 1))]}
-                r2=$1 g2=$2 b2=$3
-                r=$(((r1 + (r2 - r1) * f / 1000) * br / 1000))
-                g=$(((g1 + (g2 - g1) * f / 1000) * br / 1000))
-                b=$(((b1 + (b2 - b1) * f / 1000) * br / 1000))
+                fr=$((t * seg - si * 1000))
+                r=$(((SR[si] + (SR[si + 1] - SR[si]) * fr / 1000) * br / 1000))
+                g=$(((SG[si] + (SG[si + 1] - SG[si]) * fr / 1000) * br / 1000))
+                b=$(((SB[si] + (SB[si + 1] - SB[si]) * fr / 1000) * br / 1000))
                 if [ "$mode" -eq 24 ]; then
                     out+=$'\e[38;2;'"$r;$g;$b"'m'
                 else
@@ -246,7 +259,7 @@ ui_build_logo() {
 ui_logo_frame() {
     local i=$1
     if [ -z "${UI_LOGO_F[$i]:-}" ]; then
-        ui_logo_render $((i * UI_PH_STEP))
+        ui_logo_render "$i"
         UI_LOGO_F[$i]="$UI_LOGO"
     fi
     UI_LOGO_CUR="${UI_LOGO_F[$i]}"
@@ -257,7 +270,7 @@ ui_logo_frame() {
 ui_logo_step() {
     [ "$UI_ANIM" -eq 1 ] || return 0
     [ "$UI_LINES" -ge $((UI_FRAME_MAX + UI_LOGO_ROWS)) ] || return 0
-    UI_PHASE=$(((UI_PHASE + 1) % (UI_PH_MAX / UI_PH_STEP)))
+    UI_PHASE=$(((UI_PHASE + 1) % UI_FRAMES))
     ui_logo_frame "$UI_PHASE"
     printf '%s%s' "$UI_HOME" "${UI_LOGO_CUR//$'\n'/$'\e[K\r\n'}" >&$UI_FD
 }
@@ -286,12 +299,22 @@ UI_LOGO='' UI_LOGO_ROWS=6 UI_FRAME_MAX=22
 # 空闲时只重画 logo 那 5 行，不碰整帧 —— 整帧重画既贵又会打破「面板是快照」
 # 那条规矩。SBS_NO_ANIM=1 可以关掉
 UI_LOGO_F=() UI_PHASE=0 UI_ANIM=0 UI_ANIM_TICK=0.15
-# 色相周期 2000，呼吸周期 4000（正好两倍）—— 不成整数倍的话，循环接回起点
-# 时明暗会跳一下。总周期 4000，步长 80，共 50 帧
-UI_PH_STEP=80 UI_PH_MAX=4000 UI_LOGO_CUR=''
-# 渐变停靠点：紫 -> 品红 -> 浅粉 -> 橙 -> 浅黄。都在暖色区，相邻色差小，
-# 流动起来比跨度大的色带丝滑
-UI_STOPS=('168 85 247' '236 72 153' '244 114 182' '251 146 60' '253 224 71')
+# 三条时间轴都由帧号推导，且在第 600 帧同时归零 —— 不同时归零的话，循环接回
+# 起点时会跳一下。0.15s 一帧，600 帧正好 90 秒，三组色带各占 30 秒。
+#   色相  (f*80) % 2000   48000 能被 2000 整除
+#   呼吸  (f*80) % 4000   也能被 4000 整除
+#   色带  f*3000/600      走完回到第 0 组
+UI_PH_STEP=80 UI_FRAMES=600 UI_LOGO_CUR=''
+# 三组停靠点，每组 5 个，轮流慢慢渗过去。同序号的停靠点两两插值，所以中间
+# 任何一刻都是一条完整平滑的渐变，只是整体色调在漂
+# 三组拍平成一个数组，用偏移索引 —— 每帧拷一份 15 元素的子数组比想象中贵，
+# 实测那样一帧要 8ms，拍平之后省掉两次数组拷贝
+UI_PALS=(
+    168 85 247 236 72 153 244 114 182 251 146 60 253 224 71 # 暖：紫 品红 粉 橙 黄
+    45 212 191 34 211 238 56 189 248 99 102 241 168 85 247  # 冷：青 天蓝 蓝 靛 紫
+    34 197 94 132 204 22 190 242 100 250 204 21 251 146 60  # 绿：绿 青柠 黄绿 金 橙
+)
+UI_NSTOP=5 UI_PALSZ=15
 # 同理存一份终端设置，退出时无条件还回去。我们自己的 read -s 会关回显，
 # sudo（sudoers 里 Defaults use_pty）中继期间还会把终端整个置成 raw ——
 # 它正常退出会还原，但被 esc 取消时是被 kill 掉的，那一步就没跑。留下来的
@@ -586,7 +609,7 @@ ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
     local pid=$1 draw=$2
     while kill -0 "$pid" 2>/dev/null; do
         UI_TICK=$((UI_TICK + 1))
-        [ "$UI_ANIM" -eq 1 ] && UI_PHASE=$(((UI_PHASE + 1) % (UI_PH_MAX / UI_PH_STEP)))
+        [ "$UI_ANIM" -eq 1 ] && UI_PHASE=$(((UI_PHASE + 1) % UI_FRAMES))
         "$draw"
         if ui_tick 0.08; then
             kill "$pid" 2>/dev/null
