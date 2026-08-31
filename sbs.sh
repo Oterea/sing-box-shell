@@ -1813,13 +1813,14 @@ menu_remove_flow() {
 menu_kernel_flow() {
     local tags stable beta tag url
     core_detect_target >/dev/null 2>&1 || {
-        task_begin resolve
+        task_begin target
         task_step 0
         task_fail "unsupported arch" "unsupported architecture: $(uname -m)"
         return 1
     }
 
-    # 解析版本，spinner 转起来
+    # resolve 解的是版本号；装内核那边第一步叫 target，解的是架构对应的
+    # 资产名 —— 两件事，别再共用一个名字
     task_begin resolve
     task_step 0 "querying release tags"
     task_capture gh_resolve_tags
@@ -1850,7 +1851,7 @@ menu_kernel_flow() {
 task_install_kernel() { # $1=tag $2=下载地址
     local tag="$1" url="$2" stage tarball src full ok=0 selfcheck
 
-    task_begin resolve download verify install
+    task_begin target download verify install
     task_step 0 "$SBS_TARGET_SUFFIX"
     task_ok "$SBS_TARGET_SUFFIX" ""
 
