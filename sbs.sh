@@ -857,24 +857,13 @@ tunnel_ports() {
         | unique | .[]' "$SBS_CONFIG" 2>/dev/null
 }
 
-# clash_api 的端口。单独取是因为 zashboard 要靠它拼 setup 参数
-tunnel_clash_port() {
-    [ -f "$SBS_CONFIG" ] || return 1
-    jq -r "$TUN_JQ_LOOP"'
-        .experimental.clash_api.external_controller // empty
-        | capture("^(?<h>.*):(?<p>[0-9]+)$") | select(.h|loop) | .p' "$SBS_CONFIG" 2>/dev/null
-}
-
-# 带面板的 api 服务，输出「端口 类型」。类型 z = zashboard（要 setup 参数
-# 才知道去哪儿找 clash_api），- = 官方 dashboard（走自己那个端口的 gRPC，
-# 不需要参数）。靠 download_url 认，那是配置里唯一能区分两者的字段
+# 开了面板的 api 服务端口，一行一个
 tunnel_dashboards() {
     [ -f "$SBS_CONFIG" ] || return 1
     jq -r "$TUN_JQ_LOOP"'
         .services[]? | select(.type=="api") | select((.listen // "")|loop)
         | select((.dashboard.enabled // false) == true)
-        | "\(.listen_port) \(if (.dashboard.download_url // "" | test("zashboard")) then "z" else "-" end)"' \
-        "$SBS_CONFIG" 2>/dev/null
+        | .listen_port' "$SBS_CONFIG" 2>/dev/null
 }
 
 # 服务器地址。$SSH_CONNECTION 第三段是这条连接在服务器侧的 socket 地址，
@@ -1386,7 +1375,7 @@ cmd_status() {
 # 调用点在退出全屏之后，所以不受 58 列框宽限制，命令保持一整行不折断：
 # 折成多行加反斜杠虽然好看，但双击就选不中整条了
 cmd_tunnel() {
-    local ports p args="" host clash lp dp kind url guessed=0
+    local ports p args="" host lp dp guessed=0
     ports=$(tunnel_ports) || {
         core_error "$SBS_CONFIG not found"
         return 1
@@ -1397,20 +1386,16 @@ cmd_tunnel() {
     }
     for p in $ports; do args="$args -L $((p + TUN_OFFSET)):127.0.0.1:$p"; done
     host=$(tunnel_host) && guessed=1
-    clash=$(tunnel_clash_port)
 
     printf '\n  %srun this on your laptop, not here%s\n\n' "$C_DIM" "$C_RESET"
     printf '    %sssh -N%s %s@%s%s\n' "$C_BOLD" "$args" "$(whoami)" "$host" "$C_RESET"
     printf '\n  %sthen open%s\n\n' "$C_DIM" "$C_RESET"
-    while read -r dp kind; do
+    # 网址路径固定是 /dashboard，跟配置里的 dashboard.path 无关 —— 那个是
+    # 存放文件的本地目录名（两个面板设成不同值是为了不撞目录）
+    while read -r dp; do
         [ -n "$dp" ] || continue
         lp=$((dp + TUN_OFFSET))
-        url="http://127.0.0.1:$lp/dashboard/"
-        # 网址路径固定是 /dashboard/，跟配置里的 dashboard.path 无关 ——
-        # 那个是存放文件的本地目录名（两个面板设成不同值是为了不撞目录）
-        [ "$kind" = z ] && [ -n "$clash" ] &&
-            url="$url#/setup?hostname=127.0.0.1&port=$((clash + TUN_OFFSET))"
-        printf '    %s%s%s\n' "$C_CYAN" "$url" "$C_RESET"
+        printf '    %shttp://127.0.0.1:%s/dashboard%s\n' "$C_CYAN" "$lp" "$C_RESET"
     done < <(tunnel_dashboards)
     [ "$guessed" -eq 1 ] ||
         printf '\n  %stype your server address after the %s@ - this box sits behind NAT\n  and cannot see its own public address%s\n' \
