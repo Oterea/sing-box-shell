@@ -830,6 +830,64 @@ tun_info() {
     printf '%s\n' "$out"
 }
 
+# ── 隧道 ──
+# 面板全绑在 127.0.0.1 上，只能从本机 ssh -L 转出去。隧道是客户端发起的，
+# 服务器这边建不了也停不了 —— sbs 能做的是把该敲的命令算准。
+#
+# 端口不写死，从 config.json 读：换模板、改端口，命令自动跟着变。这正是
+# 把它放进 sbs 而不是记在 README 里的理由。只列绑 loopback 的 —— 绑
+# 0.0.0.0 的本来就能直连，转发它没意义。
+#
+# 本地端口一律 +TUN_OFFSET：这台机器和本机上的 sing-box 用的是同一份端口号
+# （官方客户端那份模板也是 9695-9697），直接 -L 9695:...:9695 会撞
+# "bind: Address already in use"。错位之后 URL 里的 port= 也得跟着错，
+# 所以两边必须在同一处算出来，不能让人自己改。
+readonly TUN_OFFSET=10000
+
+# jq 里判 loopback 的公共定义，三个查询共用
+readonly TUN_JQ_LOOP='def loop: startswith("127.") or . == "::1" or . == "localhost";'
+
+# 所有需要转发的端口，一行一个
+tunnel_ports() {
+    [ -f "$SBS_CONFIG" ] || return 1
+    jq -r "$TUN_JQ_LOOP"'
+        [ (.experimental.clash_api.external_controller // empty
+             | capture("^(?<h>.*):(?<p>[0-9]+)$") | select(.h|loop) | .p | tonumber),
+          (.services[]? | select(.type=="api") | select((.listen // "")|loop) | .listen_port) ]
+        | unique | .[]' "$SBS_CONFIG" 2>/dev/null
+}
+
+# clash_api 的端口。单独取是因为 zashboard 要靠它拼 setup 参数
+tunnel_clash_port() {
+    [ -f "$SBS_CONFIG" ] || return 1
+    jq -r "$TUN_JQ_LOOP"'
+        .experimental.clash_api.external_controller // empty
+        | capture("^(?<h>.*):(?<p>[0-9]+)$") | select(.h|loop) | .p' "$SBS_CONFIG" 2>/dev/null
+}
+
+# 带面板的 api 服务，输出「端口 类型」。类型 z = zashboard（要 setup 参数
+# 才知道去哪儿找 clash_api），- = 官方 dashboard（走自己那个端口的 gRPC，
+# 不需要参数）。靠 download_url 认，那是配置里唯一能区分两者的字段
+tunnel_dashboards() {
+    [ -f "$SBS_CONFIG" ] || return 1
+    jq -r "$TUN_JQ_LOOP"'
+        .services[]? | select(.type=="api") | select((.listen // "")|loop)
+        | select((.dashboard.enabled // false) == true)
+        | "\(.listen_port) \(if (.dashboard.download_url // "" | test("zashboard")) then "z" else "-" end)"' \
+        "$SBS_CONFIG" 2>/dev/null
+}
+
+# 客户端实际连到的那个地址。$SSH_CONNECTION 第三段就是它 —— 多网卡 / NAT /
+# 云主机的场景下比 hostname -I 准，后者会给出一个从外面连不上的内网地址
+tunnel_host() {
+    local h
+    h=$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $3}')
+    [ -n "$h" ] || h=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -n "$h" ] || h='<server-ip>'
+    case "$h" in *:*) h="[$h]" ;; esac # ssh 的 user@host 里 IPv6 要加方括号
+    printf '%s\n' "$h"
+}
+
 
 # 出口 IP 走缓存：菜单要瞬间打开，不能卡在网络请求上。
 # 只在状态可能变化时（启停、看详情）才刷新。
@@ -1301,6 +1359,42 @@ cmd_status() {
     ui_menu_header
     ui_bot
     ui_out
+    return 0
+}
+
+# 打印隧道命令。走 stdout 而不是 core_* 的 stderr —— 这是要被复制走的内容。
+# 调用点在退出全屏之后，所以不受 58 列框宽限制，命令保持一整行不折断：
+# 折成多行加反斜杠虽然好看，但双击就选不中整条了
+cmd_tunnel() {
+    local ports p args="" host clash lp dp kind url
+    ports=$(tunnel_ports) || {
+        core_error "$SBS_CONFIG not found"
+        return 1
+    }
+    [ -n "$ports" ] || {
+        core_error "no loopback-bound api port in config.json - nothing to forward"
+        return 1
+    }
+    for p in $ports; do args="$args -L $((p + TUN_OFFSET)):127.0.0.1:$p"; done
+    host=$(tunnel_host)
+    clash=$(tunnel_clash_port)
+
+    printf '\n  %srun this on your laptop, not here%s\n\n' "$C_DIM" "$C_RESET"
+    printf '    %sssh -N%s %s@%s%s\n' "$C_BOLD" "$args" "$(whoami)" "$host" "$C_RESET"
+    printf '\n  %sthen open%s\n\n' "$C_DIM" "$C_RESET"
+    while read -r dp kind; do
+        [ -n "$dp" ] || continue
+        lp=$((dp + TUN_OFFSET))
+        url="http://127.0.0.1:$lp/dashboard/"
+        # 网址路径固定是 /dashboard/，跟配置里的 dashboard.path 无关 ——
+        # 那个是存放文件的本地目录名（两个面板设成不同值是为了不撞目录）
+        [ "$kind" = z ] && [ -n "$clash" ] &&
+            url="$url#/setup?hostname=127.0.0.1&port=$((clash + TUN_OFFSET))"
+        printf '    %s%s%s\n' "$C_CYAN" "$url" "$C_RESET"
+    done < <(tunnel_dashboards)
+    printf '\n  %slocal ports are +%s to dodge sing-box on your laptop%s\n' \
+        "$C_DIM" "$TUN_OFFSET" "$C_RESET"
+    printf '  %sctrl-c closes the tunnel%s\n\n' "$C_DIM" "$C_RESET"
     return 0
 }
 
@@ -2084,7 +2178,10 @@ cli_menu_draw() {
         ui_item r restart "u" "update sbs" "$C_DIM" ""
         ui_item f refresh "d" remove "" ""
     fi
-    ui_item q quit "" "" "" ""
+    # t 只在服务起着时有意义 —— api 监听器是 sing-box 自己开的，停了就没有
+    local tdim=""
+    [ "$SVC_STATE" = active ] || tdim="$C_DIM"
+    ui_item t tunnel "q" quit "$tdim" ""
     ui_pad 5
 
     # footer 区：有内容才画分隔线
@@ -2127,7 +2224,7 @@ cli_menu() {
             ui_session_end
             return 0
             ;;
-        s | x | r | k | c | u | d | f) ;;
+        s | x | r | k | c | u | d | f | t) ;;
         *) continue ;;
         esac
         # 上一个动作的结果显示到下次「有效」按键为止
@@ -2156,6 +2253,13 @@ cli_menu() {
                 ui_session_end
                 return 0
             fi
+            ;;
+        t)
+            # 和 u / d 一样先退出全屏再打印：alt-buffer 里的内容退出时会被
+            # 终端丢掉，复制不走；框宽 58 也放不下这条命令
+            ui_session_end
+            cmd_tunnel
+            return 0
             ;;
         f)
             ui_spin refreshing net_exit_refresh
@@ -2187,6 +2291,7 @@ Menu keys:
   k  install / update kernel   c  update config (url or local file)
   s  start   x  stop           r  restart   f  refresh
   u  update sbs                d  remove everything
+  t  print the ssh tunnel command for the dashboards
   q  quit
 
 Environment:
