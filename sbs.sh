@@ -887,8 +887,10 @@ tunnel_dashboards() {
 # 那个请求会走代理出去，拿回来的是出口节点的 IP（见 SBS_IP_SOURCES 处的注释）。
 # hostname -I 同样只给网卡地址，帮不上忙。
 #
-# 所以：是公网地址就用，是内网地址就留占位符让人自己填。给一个看着像模像样、
-# 实际连不上的地址，比明摆着让人填一格要糟得多 —— 前者会让人去查服务器。
+# 所以：是公网地址就用，是内网地址就什么都不印，让命令停在 "user@" 上。
+# 不用 <server-ip> 这类占位符 —— 那玩意粘贴之后得先删掉再填，每次都要删一遍；
+# 停在 @ 上则是粘完直接敲地址回车。
+# 给一个看着像模像样、实际连不上的地址更糟，那会让人掉头去查服务器。
 tunnel_host() {
     local h
     h=$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $3}')
@@ -900,10 +902,8 @@ tunnel_host() {
         ::1 | fd* | fc* | fe80:*)
         h='' ;;
     esac
-    [ -n "$h" ] || {
-        printf '%s\n' '<server-ip>'
-        return 1 # 让调用方知道要补一句说明
-    }
+    # 什么都不输出，调用方拼出来就是 "user@"；返回 1 让它补一句说明
+    [ -n "$h" ] || return 1
     case "$h" in *:*) h="[$h]" ;; esac # ssh 的 user@host 里 IPv6 要加方括号
     printf '%s\n' "$h"
 }
@@ -1413,8 +1413,8 @@ cmd_tunnel() {
         printf '    %s%s%s\n' "$C_CYAN" "$url" "$C_RESET"
     done < <(tunnel_dashboards)
     [ "$guessed" -eq 1 ] ||
-        printf '\n  %s<server-ip> is yours to fill in - this box sits behind NAT and\n  cannot see its own public address%s\n' \
-            "$C_YELLOW" "$C_RESET"
+        printf '\n  %stype your server address after the %s@ - this box sits behind NAT\n  and cannot see its own public address%s\n' \
+            "$C_YELLOW" "$(whoami)" "$C_RESET"
     printf '\n  %slocal ports are +%s to dodge sing-box on your laptop%s\n' \
         "$C_DIM" "$TUN_OFFSET" "$C_RESET"
     printf '  %sctrl-c closes the tunnel%s\n\n' "$C_DIM" "$C_RESET"
