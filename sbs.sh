@@ -877,13 +877,33 @@ tunnel_dashboards() {
         "$SBS_CONFIG" 2>/dev/null
 }
 
-# 客户端实际连到的那个地址。$SSH_CONNECTION 第三段就是它 —— 多网卡 / NAT /
-# 云主机的场景下比 hostname -I 准，后者会给出一个从外面连不上的内网地址
+# 服务器地址。$SSH_CONNECTION 第三段是这条连接在服务器侧的 socket 地址，
+# 也就是网卡上那个 —— 不是「客户端敲的那个地址」。
+#
+# 云主机基本都在 DNAT 后面：网卡上是 10.x / 172.16-31.x / 192.168.x，公网 IP
+# 由云厂商映射，机器自己看不到。这种情况下拿到的是内网地址，填进 ssh 命令连不上。
+#
+# 而服务器无从得知自己的公网地址：问 ipinfo.io 之类也不行 —— 服务起着的时候
+# 那个请求会走代理出去，拿回来的是出口节点的 IP（见 SBS_IP_SOURCES 处的注释）。
+# hostname -I 同样只给网卡地址，帮不上忙。
+#
+# 所以：是公网地址就用，是内网地址就留占位符让人自己填。给一个看着像模像样、
+# 实际连不上的地址，比明摆着让人填一格要糟得多 —— 前者会让人去查服务器。
 tunnel_host() {
     local h
     h=$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $3}')
-    [ -n "$h" ] || h=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [ -n "$h" ] || h='<server-ip>'
+    # RFC1918 / 回环 / 链路本地 / ULA 一律不用。100.64/10 不排除 ——
+    # Tailscale 用的就是它，那个地址反而是能直接 ssh 的
+    case "$h" in
+    '' | 10.* | 127.* | 192.168.* | 169.254.* | \
+        172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | \
+        ::1 | fd* | fc* | fe80:*)
+        h='' ;;
+    esac
+    [ -n "$h" ] || {
+        printf '%s\n' '<server-ip>'
+        return 1 # 让调用方知道要补一句说明
+    }
     case "$h" in *:*) h="[$h]" ;; esac # ssh 的 user@host 里 IPv6 要加方括号
     printf '%s\n' "$h"
 }
@@ -1366,7 +1386,7 @@ cmd_status() {
 # 调用点在退出全屏之后，所以不受 58 列框宽限制，命令保持一整行不折断：
 # 折成多行加反斜杠虽然好看，但双击就选不中整条了
 cmd_tunnel() {
-    local ports p args="" host clash lp dp kind url
+    local ports p args="" host clash lp dp kind url guessed=0
     ports=$(tunnel_ports) || {
         core_error "$SBS_CONFIG not found"
         return 1
@@ -1376,7 +1396,7 @@ cmd_tunnel() {
         return 1
     }
     for p in $ports; do args="$args -L $((p + TUN_OFFSET)):127.0.0.1:$p"; done
-    host=$(tunnel_host)
+    host=$(tunnel_host) && guessed=1
     clash=$(tunnel_clash_port)
 
     printf '\n  %srun this on your laptop, not here%s\n\n' "$C_DIM" "$C_RESET"
@@ -1392,6 +1412,9 @@ cmd_tunnel() {
             url="$url#/setup?hostname=127.0.0.1&port=$((clash + TUN_OFFSET))"
         printf '    %s%s%s\n' "$C_CYAN" "$url" "$C_RESET"
     done < <(tunnel_dashboards)
+    [ "$guessed" -eq 1 ] ||
+        printf '\n  %s<server-ip> is yours to fill in - this box sits behind NAT and\n  cannot see its own public address%s\n' \
+            "$C_YELLOW" "$C_RESET"
     printf '\n  %slocal ports are +%s to dodge sing-box on your laptop%s\n' \
         "$C_DIM" "$TUN_OFFSET" "$C_RESET"
     printf '  %sctrl-c closes the tunnel%s\n\n' "$C_DIM" "$C_RESET"
