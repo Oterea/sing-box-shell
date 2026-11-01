@@ -200,7 +200,9 @@ ui_logo_render() {
 
     # 这一帧用哪两组色带、渗到几成
     u=$((f * UI_NPAL * 1000 / UI_FRAMES))
-    oa=$((u * UI_PALSZ / 1000))
+    # oa/ob 必须落在完整色带的起点；这里只按组切换，组内混合由下面的 u 完成。
+    # shellcheck disable=SC2017  # palette groups must switch discretely; u is intentionally truncated here
+    oa=$((u / 1000 * UI_PALSZ))
     ob=$(((u / 1000 + 1) % UI_NPAL * UI_PALSZ))
     u=$((u % 1000))
     # 5 个有效停靠点先算好放进并行数组。原来每个色带都要 set -- 拆一次词，
