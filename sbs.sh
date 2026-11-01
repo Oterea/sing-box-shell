@@ -200,7 +200,7 @@ ui_logo_render() {
 
     # 这一帧用哪两组色带、渗到几成
     u=$((f * UI_NPAL * 1000 / UI_FRAMES))
-    oa=$((u / 1000 * UI_PALSZ))
+    oa=$((u * UI_PALSZ / 1000))
     ob=$(((u / 1000 + 1) % UI_NPAL * UI_PALSZ))
     u=$((u % 1000))
     # 5 个有效停靠点先算好放进并行数组。原来每个色带都要 set -- 拆一次词，
