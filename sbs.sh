@@ -5,8 +5,8 @@
 # 结构分五层，自上而下依赖，不许反向调用：
 #
 #   L0  常量与原语      core_*        输出、依赖检查、架构探测。无副作用或仅限自身
-#   L1  纯查询          src_* gh_*    结果走 stdout，状态走返回码。不改状态、不交互
-#   L2  动作            kern_* svc_* cfg_*   有副作用，但一律不交互，参数由上层给
+#   L1  纯查询          src_* tun_* net_*    结果走 stdout，状态走返回码。不改状态、不交互
+#   L2  动作            pkg_* svc_* cfg_*     有副作用，但一律不交互，参数由上层给
 #   L3  编排            cmd_*         唯一允许出现 read / prompt 的一层
 #   L4  分发            cli_*         参数解析与路由
 #
@@ -15,24 +15,24 @@
 set -uo pipefail
 
 # ============================================================ L0 常量
-readonly SBS_WORK_DIR="${SBS_WORK_DIR:-$HOME/sing-box}"
+readonly SBS_WORK_DIR="/var/lib/sing-box"
 readonly SBS_EXEC="${SBS_EXEC:-/usr/local/bin/sbs}"
-readonly SBS_SERVICE="${SBS_SERVICE:-/etc/systemd/system/sbs.service}"
-# 单元名必须从 service 文件名推出来，不能另外硬编码一个 —— 覆盖了
-# SBS_SERVICE 却写死 systemctl start sbs 的话，写入和启停就指到两个
-# 不同的单元上了（默认路径下推出来还是 sbs，行为不变）
-SBS_UNIT_NAME="${SBS_SERVICE##*/}"
-readonly SBS_UNIT_NAME="${SBS_UNIT_NAME%.service}"
-readonly SBS_BIN="$SBS_WORK_DIR/sing-box"
-readonly SBS_CONFIG="$SBS_WORK_DIR/config.json"
+readonly SBS_UNIT_NAME="sing-box"
+readonly SBS_BIN="/usr/bin/sing-box"
+readonly SBS_CONFIG="/etc/sing-box/config.json"
+readonly SBS_CONFIG_DIR="${SBS_CONFIG%/*}"
 readonly SBS_SHARE="$SBS_WORK_DIR/share.txt"
-readonly SBS_LAST_SOURCE="$SBS_WORK_DIR/.last_source"
 readonly SBS_IPCACHE="$SBS_WORK_DIR/.exit_ip"
 readonly SBS_REPO="Oterea/sing-box-shell"
-readonly SBS_UPSTREAM="SagerNet/sing-box"
 
-# 全脚本唯一的可变全局，由 core_detect_target 写入，gh_asset_url 读取
-SBS_TARGET_SUFFIX=""
+# 脚本统一使用 sudo -n 调用系统动作；root 运行时直接绕过 sudo，避免依赖
+# sudo 是否安装或是否允许 root 再次授权。
+if [ "$(id -u)" -eq 0 ]; then
+    sudo() {
+        [ "${1:-}" = -n ] && shift
+        "$@"
+    }
+fi
 
 # ============================================================ L0 输出原语
 # 颜色。优先问 terminfo，问不到就回落到硬编码 ANSI。
@@ -452,13 +452,6 @@ ui_item() {
     ui_lr "    $a  $UI_CELL" ""
 }
 
-# 步骤行：状态列前置 1 列。$1=状态符 $2=步骤名 $3=细节 $4=右侧 $5=状态色
-ui_step() {
-    local colored
-    printf -v colored '  %s%s%s  %s%-10s%s%s' "$5" "$1" "$C_RESET" "$C_DIM" "$2" "$C_RESET" "$3"
-    ui_lr "$colored" "$C_DIM${4:+$4  }$C_RESET"
-}
-
 # body 补齐到固定高度，重绘时框才不跳动
 ui_pad() {
     local n=$1
@@ -663,7 +656,7 @@ ui_wait_pid() { # $1=pid $2=每拍调用的重画函数
 # ============================================================ L0 环境
 core_check_deps() {
     local missing="" t
-    for t in curl tar jq; do
+    for t in curl jq ip systemctl; do
         command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
     done
     [ -z "$missing" ] && return 0
@@ -671,85 +664,130 @@ core_check_deps() {
     return 1
 }
 
-# 启停、写 unit、自更新全要 sudo，而且都跑在后台子 shell 里（要让 spinner 转）。
-# sudo 问密码是从 /dev/tty 读的，后台子 shell 里那个提示看不见，用户敲的字又
-# 被读键循环抢走 —— 实测会一直转下去转不完。所以全部用 sudo -n（不许交互），
-# 拿不到权限就立刻失败，并在进菜单前先探一次。
+# sing-box 使用 TUN、写入 /etc/sing-box 和 /var/lib/sing-box，因此 sbs 统一要求
+# 以 root 运行。内部仍保留 sudo -n 调用，兼容 root 环境中安装了 sudo 的机器；
+# 没有 sudo 时由顶部的 root 包装器直接执行。
 core_check_sudo() {
-    sudo -n true 2>/dev/null && return 0
-    core_error "passwordless sudo required - run sudo -v first, or run sbs as root"
+    [ "$(id -u)" -eq 0 ] && return 0
+    core_error "run sbs as root"
     return 1
 }
 
 core_ensure_workdir() {
     [ -d "$SBS_WORK_DIR" ] && return 0
-    mkdir -p "$SBS_WORK_DIR"
+    sudo -n mkdir -p "$SBS_WORK_DIR" "$SBS_CONFIG_DIR"
 }
 
-# 探测本机架构与 C 库，拼出 release 资产的文件名后缀。
-# 只在 -glibc / -musl 之间二选一，主动避开无后缀那个 —— 它是 glibc 动态链接
-# 且捆了 libcronet.so，在 musl 系统（Alpine / OpenWrt）上跑不起来。
-core_detect_target() {
-    local machine arch libc
-    machine=$(uname -m)
-    case "$machine" in
-    x86_64 | amd64) arch=amd64 ;;
-    aarch64 | arm64) arch=arm64 ;;
-    armv7l | armv7) arch=armv7 ;;
-    i386 | i686) arch=386 ;;
-    riscv64) arch=riscv64 ;;
-    loongarch64) arch=loong64 ;;
-    s390x) arch=s390x ;;
-    ppc64le) arch=ppc64le ;;
-    *)
-        core_error "unsupported architecture: $machine"
+# 内核由发行版包管理器安装。sbs 只负责配置和服务控制，不再下载或替换
+# 自己维护的 sing-box 二进制。当前支持官方文档提供仓库安装方式的
+# Debian/Ubuntu（APT）和 Fedora/RHEL（DNF）。
+pkg_manager() {
+    if command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1; then
+        printf '%s\n' deb
+    elif command -v dnf >/dev/null 2>&1; then
+        printf '%s\n' rpm
+    else
         return 1
+    fi
+}
+
+pkg_prepare_deb_repo() {
+    local tmp
+    tmp=$(mktemp) || return 1
+    if ! curl -fsSL --connect-timeout 5 --max-time 30 \
+        -o "$tmp" https://sing-box.app/gpg.key; then
+        rm -f "$tmp"
+        return 1
+    fi
+    sudo -n mkdir -p /etc/apt/keyrings || { rm -f "$tmp"; return 1; }
+    sudo -n install -m 0644 "$tmp" /etc/apt/keyrings/sagernet.asc || {
+        rm -f "$tmp"
+        return 1
+    }
+    rm -f "$tmp"
+    sudo -n tee /etc/apt/sources.list.d/sing-box.sources >/dev/null <<'APT'
+Types: deb
+URIs: https://deb.sagernet.org/
+Suites: *
+Components: *
+Enabled: yes
+Signed-By: /etc/apt/keyrings/sagernet.asc
+APT
+}
+
+pkg_prepare_rpm_repo() {
+    sudo -n mkdir -p /etc/yum.repos.d || return 1
+    curl -fsSL --connect-timeout 5 --max-time 30 \
+        https://sing-box.app/sing-box.repo |
+        sudo -n tee /etc/yum.repos.d/sing-box.repo >/dev/null
+}
+
+pkg_kernel_install() { # $1=stable package name or sing-box-beta
+    local package="$1" pm
+    pm=$(pkg_manager) || {
+        core_error "unsupported package manager"
+        return 1
+    }
+    case "$pm" in
+    deb)
+        pkg_prepare_deb_repo || return 1
+        sudo -n apt-get update && sudo -n apt-get install -y "$package"
+        ;;
+    rpm)
+        pkg_prepare_rpm_repo || return 1
+        sudo -n dnf install -y "$package"
         ;;
     esac
-
-    if ldd --version 2>&1 | grep -qi musl; then libc=musl; else libc=glibc; fi
-
-    SBS_TARGET_SUFFIX="linux-${arch}-${libc}.tar.gz"
-    core_info "target: ${arch}/${libc} (asset: *-${SBS_TARGET_SUFFIX})"
 }
 
-# ============================================================ L1 下载源
-#
-# 两类下载源，性质不同，不能共用一个列表：
-#
-#   内核二进制是 GitHub release 资产。jsDelivr 不服务这类文件，只能走反代。
-#   脚本自身是仓库内文件，什么源都行。
-#
-# 共同的排序原则是「新鲜度优先」：jsDelivr 的 @main 有约 12h TTL，push 之后会
-# 持续吐旧版（purge 接口是异步的，实测 purge 后边缘节点仍返回旧版本），
-# 对一个能自更新的脚本这个性质不可接受，所以它一律排最后。
-
-src_kernel() {
-    [ -n "${SBS_PROXY:-}" ] && printf '%s\n' "$SBS_PROXY"
-    [ -s "$SBS_LAST_SOURCE" ] && cat "$SBS_LAST_SOURCE"
-    printf '%s\n' "https://gh-proxy.com"
-    printf '%s\n' "https://ghfast.top"
-    printf '%s\n' "direct"
-    return 0
+pkg_kernel_remove() {
+    local pm rc=0
+    pm=$(pkg_manager) || return 0
+    case "$pm" in
+    deb)
+        if dpkg-query -W -f='${Status}' sing-box 2>/dev/null | grep -q 'install ok installed'; then
+            sudo -n apt-get purge -y sing-box || rc=1
+        fi
+        if dpkg-query -W -f='${Status}' sing-box-beta 2>/dev/null | grep -q 'install ok installed'; then
+            sudo -n apt-get purge -y sing-box-beta || rc=1
+        fi
+        ;;
+    rpm)
+        if rpm -q sing-box >/dev/null 2>&1; then
+            sudo -n dnf remove -y sing-box || rc=1
+        fi
+        if rpm -q sing-box-beta >/dev/null 2>&1; then
+            sudo -n dnf remove -y sing-box-beta || rc=1
+        fi
+        ;;
+    esac
+    return "$rc"
 }
 
+pkg_repo_remove() {
+    local pm
+    pm=$(pkg_manager) || return 0
+    case "$pm" in
+    deb)
+        sudo -n rm -f /etc/apt/sources.list.d/sing-box.sources \
+            /etc/apt/keyrings/sagernet.asc
+        ;;
+    rpm)
+        sudo -n rm -f /etc/yum.repos.d/sing-box.repo
+        ;;
+    esac
+}
+
+# sbs 自更新仍然是仓库文件下载，不属于 sing-box 内核安装。保留独立的
+# 多源逻辑，并允许用 SBS_MIRROR 指定一个完整 base URL。
 src_script() {
     [ -n "${SBS_MIRROR:-}" ] && printf '%s\n' "$SBS_MIRROR"
     printf '%s\n' "https://gh-proxy.com/https://raw.githubusercontent.com/$SBS_REPO/main"
     printf '%s\n' "https://ghfast.top/https://raw.githubusercontent.com/$SBS_REPO/main"
     printf '%s\n' "https://raw.githubusercontent.com/$SBS_REPO/main"
     printf '%s\n' "https://testingcf.jsdelivr.net/gh/$SBS_REPO@main"
-    return 0
 }
 
-src_remember() { printf '%s\n' "$1" >"$SBS_LAST_SOURCE" 2>/dev/null; }
-
-# ============================================================ L1 取回
-#
-# 只有失败才换源，慢不换。曾经考虑过用 --speed-limit 把「慢」也判成失败，
-# 但那样末位源一旦触发就等于什么都拿不到（慢总比没有强），而且网络抖动会误伤。
-
-# 取回仓库内文件（小文件，源是完整 base URL）
 script_fetch() { # $1=本地目标路径 $2=远端文件名
     local dst="$1" name="$2" base
     for base in $(src_script | awk '!seen[$0]++'); do
@@ -759,66 +797,6 @@ script_fetch() { # $1=本地目标路径 $2=远端文件名
     done
     core_error "all script sources failed - set SBS_MIRROR=<base-url> to pick one"
     return 1
-}
-
-# ============================================================ L1 版本发现
-#
-# 不走 GitHub API：单个 release 的 JSON 就有约 340KB（每个 release 携带
-# 154 个 asset 的元数据），per_page=15 要拉约 5MB，而国内链路只有约 35KB/s，
-# 实测必然超时且无超时参数时会无限挂起。改用两条轻量通路。
-
-# atom：8KB，最快，但窗口只有约 10 条
-gh_tags_atom() {
-    curl -sfL --connect-timeout 5 --max-time 25 \
-        "https://github.com/$SBS_UPSTREAM/releases.atom" |
-        grep -o 'href="[^"]*releases/tag/[^"]*"' | sed 's|.*/tag/||; s|"$||'
-}
-
-# jsDelivr：145KB，全量 600+ 条，完全不碰 github.com
-gh_tags_jsdelivr() {
-    curl -sfL --connect-timeout 5 --max-time 25 \
-        "https://data.jsdelivr.com/v1/packages/gh/$SBS_UPSTREAM" |
-        jq -r '.versions[].version' | sed 's/^/v/'
-}
-
-# $1=full 时直接要全量列表
-gh_tag_list() {
-    local tags
-    if [ "${1:-}" != full ]; then
-        tags=$(gh_tags_atom) && [ -n "$tags" ] && {
-            printf '%s\n' "$tags"
-            return 0
-        }
-    fi
-    gh_tags_jsdelivr
-}
-
-# 从 stdin 读 tag 列表，挑出第一个。rc / alpha 不算 beta —— 只要 beta 那一档
-gh_pick_stable() { grep -vE -- '-(alpha|beta|rc)' | head -n 1; }
-gh_pick_beta() { grep -- '-beta' | head -n 1; }
-
-# 按命名规则拼出下载地址。stable 与 beta 规则一致，已验证
-gh_asset_url() { # $1=tag
-    printf '%s\n' "https://github.com/$SBS_UPSTREAM/releases/download/$1/sing-box-${1#v}-${SBS_TARGET_SUFFIX}"
-}
-
-# 输出两行：稳定版 tag、beta tag（beta 可能为空行）
-gh_resolve_tags() {
-    local tags stable beta
-    tags=$(gh_tag_list)
-    stable=$(printf '%s\n' "$tags" | gh_pick_stable)
-    beta=$(printf '%s\n' "$tags" | gh_pick_beta)
-
-    # atom 窗口太小或拉不到时，落到全量列表
-    if [ -z "$stable" ] || [ -z "$beta" ]; then
-        core_warn "atom feed came up short, falling back to the jsDelivr tag list"
-        tags=$(gh_tag_list full)
-        [ -z "$stable" ] && stable=$(printf '%s\n' "$tags" | gh_pick_stable)
-        [ -z "$beta" ] && beta=$(printf '%s\n' "$tags" | gh_pick_beta)
-    fi
-
-    [ -z "$stable" ] && return 1
-    printf '%s\n%s\n' "$stable" "$beta"
 }
 
 # ============================================================ L1 现场信息
@@ -958,9 +936,7 @@ net_exit_cached() {
 }
 
 # ============================================================ L2 内核
-# 不用 `... | head -1`：开了 pipefail 时，head 提前关闭管道会给前面的进程
-# 送 SIGPIPE，整条管道的状态变成 141，调用方会误判成「二进制跑不起来」。
-# 输出很小时通常不触发，但那是靠管道缓冲区侥幸，不是保证。
+# sing-box 由官方 APT/DNF 包安装；这里仅查询已安装的官方二进制。
 kern_version() {
     [ -x "$SBS_BIN" ] || return 1
     local out
@@ -976,43 +952,8 @@ kern_version_short() {
     printf '%s\n' "${v%%$'\n'*}"
 }
 
-# 下载、解压、自检、顶替。全程在 $SBS_WORK_DIR 下的临时目录里进行。
-#
-# 之所以不直接往最终位置解压：GNU tar 是「先 unlink 旧文件再新建」，解压一开始
-# 旧二进制就没了；中途断网 / 磁盘满 / 包损坏就会既没有新的也没有旧的。而顶替前
-# 的一次 version 自检，能把架构选错、libc 不匹配、包损坏全部挡在替换之前。
-#
-# 临时目录必须放在 $SBS_WORK_DIR 内部以保证与目标同一文件系统 —— 跨文件系统时
-# mv 无法 rename，会退化成复制覆盖，上面两条保证就都不成立了。
-#
-# 注：实测 tar 与 install 都会先 unlink，不会撞 Text file busy；只有 cp 这类
-# 就地写入才会。所以选 mv 不是为了绕开 ETXTBSY，而是为了「先验证再顶替」。
-# 解压到临时目录。整包解出来，LICENSE 之类随临时目录一起删
-kern_extract() { # $1=stage $2=tarball
-    tar --strip-components=1 -xzf "$2" -C "$1" || return 1
-    [ -f "$1/sing-box" ] || return 1
-    chmod +x "$1/sing-box"
-}
-
-# 顶替前自检：架构选错、libc 不匹配、包损坏都在这一步暴露
-kern_selfcheck() { # $1=stage，成功时 echo 版本行
-    local out
-    out=$("$1/sing-box" version 2>&1) || {
-        printf '%s\n' "${out%%$'\n'*}"
-        return 1
-    }
-    printf '%s\n' "${out%%$'\n'*}"
-}
-
-# 同盘改名顶替。GNU tar 是「先 unlink 再新建」，直接往最终位置解压的话，
-# 解压一开始旧二进制就没了，中途失败就两头空。所以先在临时目录里做完再换。
-kern_replace() { # $1=stage
-    mv -f "$1/sing-box" "$SBS_BIN"
-}
-
-# 清掉上次留下的临时文件/目录。安装或自更新中途被杀（断网、SSH 掉线）时，
-# 里面躺着一个几十 MB 的二进制，而各处只删自己那个 $$，不扫就会一直攒。
-# 按 PID 判活，免得误删另一个正在跑的实例
+# sbs 自更新的临时文件清理和原子替换。它只替换管理脚本本身，不触碰
+# /usr/bin/sing-box；sing-box 内核由包管理器负责。
 stage_sweep() { # $1=所在目录 $2=文件名前缀
     local s pid
     for s in "$1/$2".*; do
@@ -1023,18 +964,11 @@ stage_sweep() { # $1=所在目录 $2=文件名前缀
         '' | *[!0-9]*) continue ;;
         esac
         kill -0 "$pid" 2>/dev/null && continue
-        # /usr/local/bin 下的半成品要 root 才删得掉。报错一律吞掉 ——
-        # 这函数在任务视图里跑，往 stderr 写一个字都会糊在框上
         rm -rf "$s" 2>/dev/null || sudo -n rm -rf "$s" 2>/dev/null || true
     done
     return 0
 }
 
-# 把拉下来的脚本顶替到 $SBS_EXEC。中转文件放在目标旁边，保证最后一步是
-# 同盘改名 —— 本脚本自己就是 $SBS_EXEC，而 bash 是边读边执行、按字节偏移
-# 续读的：就地覆盖会让它从新内容的行中间接上，把两个版本串起来跑（已实测
-# 复现）。cmd_update_self 和 task_update_self 都走这里，两边各写一遍的时候
-# 连这段注释都抄了两份，而 stage_sweep 只有其中一边记得调
 script_replace() { # $1=新脚本
     local dir base stage
     dir=$(dirname "$SBS_EXEC")
@@ -1045,14 +979,6 @@ script_replace() { # $1=新脚本
         sudo -n mv -f "$stage" "$SBS_EXEC" && return 0
     sudo -n rm -f "$stage" 2>/dev/null
     return 1
-}
-
-kern_stage_new() {
-    local d="$SBS_WORK_DIR/.stage.$$"
-    stage_sweep "$SBS_WORK_DIR" ".stage"
-    rm -rf "$d"
-    mkdir -p "$d" || return 1
-    printf '%s\n' "$d"
 }
 
 # ============================================================ L2 配置
@@ -1154,41 +1080,18 @@ cfg_validate() { # $1=文件
 cfg_commit() { # $1=临时文件
     local backup="$SBS_CONFIG.backup"
     if [ -f "$SBS_CONFIG" ]; then
-        cp -f "$SBS_CONFIG" "$backup" && printf 'backup\n'
+        cp -f "$SBS_CONFIG" "$backup" || return 1
+        printf 'backup\n'
     fi
     mv -f "$1" "$SBS_CONFIG"
 }
 
 # ============================================================ L2 服务
-svc_write_unit() {
-    local ver
-    ver=$(kern_version) || ver="unknown"
-
-    # Restart=on-failure 而非 always：正常退出（exit 0）不该被反复拉起
-    # RestartSec：配置写错导致起来就崩时，避免秒级重启刷爆日志、淹没真正的错误
-    # LimitNOFILE：TUN 模式下整机连接都过 sing-box，默认 1024 个句柄容易撞上限
-    sudo -n tee "$SBS_SERVICE" >/dev/null <<UNIT
-[Unit]
-Description=$ver (managed by sbs)
-After=network.target
-
-[Service]
-ExecStart=$SBS_BIN run
-WorkingDirectory=$SBS_WORK_DIR/
-Restart=on-failure
-RestartSec=10
-LimitNOFILE=infinity
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-    [ -f "$SBS_SERVICE" ] || {
-        core_error "cannot write $SBS_SERVICE"
-        return 1
-    }
-    sudo -n systemctl daemon-reload
-    core_info "service file written: $SBS_SERVICE"
+svc_enable_unit() {
+    # sing-box.service 由官方系统包提供，sbs 不再生成或覆盖 unit。
+    sudo -n systemctl daemon-reload &&
+        sudo -n systemctl enable "$SBS_UNIT_NAME" || return 1
+    core_info "using official service: $SBS_UNIT_NAME"
 }
 
 # 起之前先 reset-failed。systemd 默认 10 秒内最多起 5 次（StartLimitBurst=5），
@@ -1258,10 +1161,9 @@ svc_wait_tun() {
 }
 
 svc_purge() {
+    sudo -n systemctl cat "$SBS_UNIT_NAME" >/dev/null 2>&1 || return 0
     sudo -n systemctl disable "$SBS_UNIT_NAME" >/dev/null 2>&1
     sudo -n systemctl stop "$SBS_UNIT_NAME" >/dev/null 2>&1
-    sudo -n rm -f "$SBS_SERVICE"
-    sudo -n systemctl daemon-reload
 }
 
 
@@ -1315,7 +1217,7 @@ cmd_update_self() {
         return 1
     }
     script_replace "$tmpdir/sbs.sh" || {
-        core_error "cannot replace $SBS_EXEC - check passwordless sudo"
+        core_error "cannot replace $SBS_EXEC - check root permissions"
         return 1
     }
     core_info "sbs updated"
@@ -1406,7 +1308,7 @@ cmd_tunnel() {
     return 0
 }
 
-# ============================================================ L4 任务视图：步骤列表与下载进度
+# ============================================================ L4 任务视图：步骤列表
 #
 # 一个任务 = 若干步骤。每步有状态（pending / running / ok / fail）、细节、右侧信息。
 # 画在与菜单同一个框里：header 三行不变，只有 body 换成步骤列表。
@@ -1465,22 +1367,9 @@ task_fail() {
 # 130 表示用户按 esc 取消
 task_run() {
     # 输出必须掐掉：界面是往 stderr 画的，被调命令随便往 stderr 写一行就会
-    # 糊在框上（tar 的报错、systemctl 的提示都会）。任务视图自己会报步骤结果
+    # 糊在框上（systemctl 的提示都会）。任务视图自己会报步骤结果
     "$@" >/dev/null 2>&1 </dev/null &
     ui_wait_pid $! task_draw
-}
-
-# 同上，外加把命令的 stdout 收进 REPLY。省掉每个调用点自己 mktemp、读回、
-# rm 的那一圈样板
-task_capture() {
-    local t rc
-    t=$(mktemp) || return 1
-    "$@" >"$t" 2>/dev/null </dev/null &
-    ui_wait_pid $! task_draw
-    rc=$?
-    REPLY=$(cat "$t" 2>/dev/null)
-    rm -f "$t"
-    return "$rc"
 }
 
 # footer 里转一个 spinner 等命令跑完，不进任务视图。$1=文案 $2..=要跑的命令。
@@ -1535,74 +1424,6 @@ task_draw() {
         done
     fi
     cli_menu_draw
-}
-
-
-# ── 带真进度的下载 ──
-#
-# curl 自己的进度条格式我们控制不了，会打断框内排版。改成：curl 丢后台静默下载，
-# 前台轮询目标文件已写入的字节数，对比 Content-Length 自己画条。
-# 顺带白拿速率与 eta —— 这两个 curl 的进度条也给不了。
-#
-# 拿不到 Content-Length 时退化为「只显示已下载量 + 速率」，不画百分比。
-
-dl_content_length() { # $1=url
-    curl -sIL --connect-timeout 5 --max-time 20 "$1" 2>/dev/null |
-        tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print n+0}'
-}
-
-# $1=目标文件 $2=完整 URL $3=步骤下标
-# 下载进度：这是喂给 ui_wait_pid 的重画函数，每拍算一次进度再画。
-# 状态走 DL_* 全局而不是闭包 —— bash 没有闭包，重画函数只能这么拿到上下文。
-DL_DST='' DL_TOTAL=0 DL_T0=0 DL_IDX=0 DL_RW=0
-_dl_draw() {
-    # 条宽不写死。这一行的账是
-    #   2 缩进 + 1 符号 + 2 + 10 名字 + w 条 + 5 " nnn%" + rw 右半边 + 2 尾距 <= UI_IN
-    # 前后那些固定部分合计 22，剩下的都给条：w = UI_IN - 22 - rw。
-    # rw 取「见过的最长右半边」，只增不减且按 4 格取整 —— eta 并不是单调变短
-    # 的，"eta 2m" 跳到 "eta 39s" 反而长了一个字，不取整条宽就会中途抖一格。
-    local wfix=22 now elapsed spd pct eta bar f r w
-    now=$(stat -c %s "$DL_DST" 2>/dev/null || echo 0)
-    elapsed=$(($(date +%s) - DL_T0))
-    [ "$elapsed" -lt 1 ] && elapsed=1
-    spd=$(fmt_size $((now / elapsed)))
-    if [ "$DL_TOTAL" -gt 0 ]; then
-        pct=$((now * 100 / DL_TOTAL))
-        [ "$pct" -gt 100 ] && pct=100
-        if [ "$now" -gt 0 ] && [ "$now" -lt "$DL_TOTAL" ]; then
-            eta="eta $(fmt_dur $(((DL_TOTAL - now) * elapsed / now)))"
-        else eta=""; fi
-
-        # 先定右半边，再拿剩下的空间算条宽 —— 顺序反过来就又变成猜了
-        r="$spd/s${eta:+  $eta}"
-        # 条最窄留 8 格；右半边真宽到挤掉它，就丢 eta 保速率
-        [ "${#r}" -gt $((UI_IN - wfix - 8)) ] && r="$spd/s"
-        [ "${#r}" -gt "$DL_RW" ] && DL_RW=${#r}
-        w=$((UI_IN - wfix - (DL_RW + 3) / 4 * 4))
-        # 取整可能多吃几格，把条压到 8 以下。钳回 8 正好把预算还平
-        [ "$w" -lt 8 ] && w=8
-
-        f=$((pct * w / 100))
-        printf -v bar '%*s' "$f" ''
-        bar="${bar// /#}"
-        printf -v f '%*s' $((w - f)) ''
-        bar="$bar${f// /.}"
-        printf -v pct '%3d' "$pct"
-        TASK_DETAIL[$DL_IDX]="$bar $pct%"
-        TASK_RIGHT[$DL_IDX]="$r"
-    else
-        TASK_DETAIL[$DL_IDX]="$(fmt_size "$now")"
-        TASK_RIGHT[$DL_IDX]="$spd/s"
-    fi
-    task_draw
-}
-
-dl_with_progress() { # $1=落地路径 $2=url $3=步骤下标
-    DL_DST="$1" DL_IDX="$3" DL_RW=0
-    DL_TOTAL=$(dl_content_length "$2")
-    DL_T0=$(date +%s)
-    curl -fL --connect-timeout 5 --retry 2 -s -o "$DL_DST" "$2" </dev/null &
-    ui_wait_pid $! _dl_draw
 }
 
 
@@ -1922,124 +1743,99 @@ menu_remove_flow() {
     ui_choose "remove all?" "no" "yes" || return 1
     [ "$UI_CHOICE" -eq 1 ] || return 1
 
-    task_begin service files script
+    task_begin service package repository files script
     task_step 0
-    task_run svc_purge # systemctl stop 可能要等服务自己收尾，别让屏幕冻着
-    task_ok "unit disabled and removed" ""
+    if ! task_run svc_purge; then
+        task_fail "service stop failed" "could not stop $SBS_UNIT_NAME" \
+            "check systemctl status $SBS_UNIT_NAME"
+        return 1
+    fi
+    task_ok "official service stopped" ""
     task_step 1
-    task_run sudo -n rm -rf "$SBS_WORK_DIR"
-    task_ok "$SBS_WORK_DIR" ""
+    if ! task_run pkg_kernel_remove; then
+        task_fail "package removal failed" "could not remove the sing-box package" \
+            "check the package-manager logs"
+        return 1
+    fi
+    task_ok "sing-box package removed" ""
     # 删掉自己之后本进程仍能跑完 —— bash 攥着已打开的 fd，inode 还活着
     task_step 2
-    sudo -n rm -f "$SBS_EXEC"
+    if ! task_run pkg_repo_remove; then
+        task_fail "repository cleanup failed" "could not remove the sing-box repository" \
+            "check permissions"
+        return 1
+    fi
+    task_ok "official repository removed" ""
+    task_step 3
+    if ! task_run sudo -n rm -rf "$SBS_CONFIG_DIR" "$SBS_WORK_DIR"; then
+        task_fail "cleanup failed" "could not remove sing-box files" "check permissions"
+        return 1
+    fi
+    task_ok "$SBS_CONFIG_DIR" ""
+    task_step 4
+    if ! task_run sudo -n rm -f "$SBS_EXEC"; then
+        task_fail "cleanup failed" "could not remove $SBS_EXEC" "check permissions"
+        return 1
+    fi
     task_ok "$SBS_EXEC" ""
     return 0
 }
 
 # ── 菜单里的「装/更新内核」完整流程 ──
 menu_kernel_flow() {
-    local tags stable beta tag url
-    core_detect_target >/dev/null 2>&1 || {
+    local pm package
+    pm=$(pkg_manager) || {
         task_begin target
         task_step 0
-        task_fail "unsupported arch" "unsupported architecture: $(uname -m)"
+        task_fail "unsupported system" "no supported package manager found" \
+            "supported now: apt/dpkg and dnf"
         return 1
     }
 
-    # resolve 解的是版本号；装内核那边第一步叫 target，解的是架构对应的
-    # 资产名 —— 两件事，别再共用一个名字
-    task_begin resolve
-    task_step 0 "querying release tags"
-    task_capture gh_resolve_tags
-    [ $? -eq 130 ] && return 130
-    tags="$REPLY"
-    if [ -z "$tags" ]; then
-        task_fail "cannot resolve" "cannot fetch the version list" "github.com and jsDelivr are both unreachable"
-        return 1
+    if [ "$pm" = deb ] || [ "$pm" = rpm ]; then
+        ui_choose "which release?" "stable" "beta" || return 130
+        [ "$UI_CHOICE" -eq 0 ] && package=sing-box || package=sing-box-beta
     fi
-    stable=$(printf '%s\n' "$tags" | sed -n 1p)
-    beta=$(printf '%s\n' "$tags" | sed -n 2p)
-    task_ok "stable ${stable#v}    beta ${beta#v}" ""
-
-    if [ -n "$beta" ]; then
-        ui_choose "which release?" "stable ${stable#v}" "beta ${beta#v}" || return 130
-        [ "$UI_CHOICE" -eq 0 ] && tag="$stable" || tag="$beta"
-    else
-        ui_choose "which release?" "stable ${stable#v}" || return 130
-        tag="$stable"
-    fi
-    url=$(gh_asset_url "$tag")
-    task_install_kernel "$tag" "$url"
+    task_install_kernel "$pm" "$package"
 }
 
-# ── 任务：装/更新内核。交互路径，走任务视图 ──
-# 与 kern_install 共用同一批原语（kern_extract / kern_selfcheck / kern_replace），
-# 区别只在于「谁来汇报进度」
-task_install_kernel() { # $1=tag $2=下载地址
-    local tag="$1" url="$2" stage tarball src full ok=0 selfcheck
+# ── 任务：通过官方包管理器安装/更新内核 ──
+task_install_kernel() { # $1=包管理器 $2=包名
+    local pm="$1" package="$2" version
 
-    task_begin target download verify install
-    task_step 0 "$SBS_TARGET_SUFFIX"
-    task_ok "$SBS_TARGET_SUFFIX" ""
+    task_begin repository install service
+    task_step 0
+    task_ok "$pm  $package" ""
 
-    stage=$(kern_stage_new) || {
-        task_step 1
-        task_fail "cannot create temp dir" "cannot create temp dir under $SBS_WORK_DIR" "check disk space and permissions"
+    task_step 1
+    if ! task_run pkg_kernel_install "$package"; then
+        task_fail "install failed" "cannot install $package from the official repository" \
+            "check repository access and package-manager logs"
+        return 1
+    fi
+    version=$(kern_version_short || true)
+    [ -n "$version" ] || {
+        task_fail "not found" "package installed but $SBS_BIN is unavailable" \
+            "check the package-manager result"
         return 1
     }
-    tarball="$stage/sing-box.tar.gz"
-
-    # 逐个源试，每个源的结局都留在屏上
-    task_step 1
-    for src in $(src_kernel | awk '!seen[$0]++'); do
-        if [ "$src" = direct ]; then full="$url"; else full="$src/$url"; fi
-        TASK_DETAIL[1]="$src"
-        TASK_RIGHT[1]=""
-        task_draw
-        dl_with_progress "$tarball" "$full" 1
-        case $? in
-        0)
-            src_remember "$src"
-            ok=1
-            break
-            ;;
-        130)
-            rm -rf "$stage"
-            return 130 # 用户取消，不再试下一个源
-            ;;
-        esac
-        ui_step "$UI_BAD" download "$src" "failed" "$C_YELLOW"
-    done
-    if [ "$ok" -ne 1 ]; then
-        task_fail "all sources unreachable" \
-            "all download sources are unreachable" "check the network, or pick a mirror:" "  SBS_PROXY=https://ghfast.top sbs"
-        rm -rf "$stage"
-        return 1
-    fi
-    task_ok "$(fmt_size "$(stat -c %s "$tarball" 2>/dev/null || echo 0)") downloaded" ""
+    task_ok "$version" ""
 
     task_step 2
-    if ! task_run kern_extract "$stage" "$tarball"; then
-        task_fail "extract failed" "extract failed, or no sing-box binary in the archive" "likely a partial download - retry"
-        rm -rf "$stage"
+    if ! task_run svc_enable_unit; then
+        task_fail "service setup failed" "could not enable $SBS_UNIT_NAME" \
+            "check systemctl and package-manager logs"
         return 1
     fi
-    if ! selfcheck=$(kern_selfcheck "$stage"); then
-        task_fail "cannot run" "the new binary does not run - kept the old one" "$selfcheck"
-        rm -rf "$stage"
-        return 1
-    fi
-    task_ok "${selfcheck#sing-box version }" ""
+    task_ok "official $SBS_UNIT_NAME" ""
 
     task_step 3
-    if ! kern_replace "$stage"; then
-        task_fail "replace failed" "replace failed - kept the old one" "check permissions on $SBS_BIN"
-        rm -rf "$stage"
+    if ! systemctl cat "$SBS_UNIT_NAME" >/dev/null 2>&1; then
+        task_fail "service missing" "the package did not provide $SBS_UNIT_NAME" \
+            "check the package installation"
         return 1
     fi
-    rm -rf "$stage"
-    task_run svc_write_unit # 里头 systemctl daemon-reload 要 435ms，同步会掉 6 帧
-    task_ok "$SBS_BIN" "$(fmt_size "$(stat -c %s "$SBS_BIN" 2>/dev/null || echo 0)")"
+    task_ok "$SBS_CONFIG" ""
     svc_is_active && {
         TASK_HINT=("restart to run the new kernel")
         task_draw
@@ -2150,7 +1946,7 @@ _ui_menu_header() {
 
 
 cli_menu_draw() {
-    UI_BODY=5 # 9 个动作：2 列 4 行 + q 单独一行
+    UI_BODY=5 # 10 个动作：2 列 5 行
     ui_reset
     # logo 画在框外面。按「最高的那一帧」判断放不放得下，而不是按当前这一帧
     # —— 否则任务视图长出几行时 logo 会突然消失，整个框往上跳
@@ -2165,7 +1961,7 @@ cli_menu_draw() {
     ui_menu_header
     ui_sep
 
-    # k 一个键两种含义：没装内核时是 install（内核+unit+订阅一条龙），
+    # k 一个键两种含义：没装内核时是 install（包+官方 service+订阅一条龙），
     # 装了之后才是 update kernel。全新机器上敲 sbs 必须有路可走。
     local klabel
     if [ -x "$SBS_BIN" ]; then klabel="update kernel"; else klabel="install"; fi
@@ -2216,7 +2012,6 @@ cli_menu() {
     fi
 
     local key rc
-    core_check_sudo || return 1
     ui_measure
     # 无论怎么退出（正常 / Ctrl-C / 报错）都要把光标恢复出来
     ui_session_begin
@@ -2303,10 +2098,14 @@ Menu keys:
   q  quit
 
 Environment:
-  SBS_PROXY    mirror for kernel downloads, e.g. https://gh-proxy.com
   SBS_MIRROR   base URL for script sources
   SBS_ASCII    set to 1 to force plain ASCII drawing
   SBS_NO_ANIM  set to 1 to turn the logo animation off
+
+Kernel installation:
+  Debian/Ubuntu: official APT repository
+  Fedora/RHEL:   official DNF repository
+  Service:       sing-box.service
 USAGE
 }
 
@@ -2347,6 +2146,7 @@ main() {
     ui_init_charset
     ui_build_logo # 要等前两个定完颜色才能拼
     core_check_deps || exit 1
+    core_check_sudo || exit 1
     core_ensure_workdir || die "cannot create $SBS_WORK_DIR"
     cli_dispatch "$@"
 }

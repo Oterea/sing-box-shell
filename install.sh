@@ -2,8 +2,7 @@
 # sing-box-shell 安装器。把 sbs.sh 取回来放到 /usr/local/bin/sbs。
 set -u
 
-# 目标路径可覆盖：没有 sudo 的机器可以装到 ~/.local/bin，跟 sbs 自己认的
-# 那个环境变量同名，两边一致
+# 目标路径可覆盖；默认安装到系统路径。
 exec="${SBS_EXEC:-/usr/local/bin/sbs}"
 
 # ── 配色 ──────────────────────────────────────────────────────────
@@ -60,6 +59,9 @@ die() {                                    # $1=步骤 $2=原因 $3=可选建议
     [ $# -gt 2 ] && printf '     %s%s%s\n' "$DIM" "$3" "$RESET" >&2
     exit 1
 }
+
+[ "$(id -u)" -eq 0 ] ||
+    die system "run the installer as root" "sing-box TUN management requires root"
 # 把上一行擦掉重写：「正在做」变成「做完了」，不用占两行。
 # 非终端（管道、日志）时什么都不做，两行都留着反而更好读
 back() { [ -t 1 ] && printf '\033[A\r\033[K'; }
@@ -135,10 +137,9 @@ good curl "$curl_bin"
 dir=$(dirname "$exec")
 need_sudo() {
     command -v sudo >/dev/null 2>&1 ||
-        die target "no write access to $dir" "run as root, or set SBS_EXEC=~/.local/bin/sbs"
+        die target "no write access to $dir" "run as root"
 }
-# 目录不在就先自己建，建不动才请 sudo。已存在的目录一个字都不改 ——
-# 顺手 chmod 一个不属于自己的 /usr/local/bin 只会平白失败
+# 目录不在就先自己建，建不动才请 sudo。
 made=""
 if [ ! -d "$dir" ]; then
     mkdir -p "$dir" 2>/dev/null || {
@@ -147,7 +148,7 @@ if [ ! -d "$dir" ]; then
     }
     made="  created"
 fi
-# 目标目录本来就可写就别惊动 sudo —— root，或者装到 ~/.local/bin 这类地方
+# 目标目录本来就可写就别惊动 sudo。
 SUDO=""
 [ -w "$dir" ] || {
     SUDO=sudo
