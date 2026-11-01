@@ -24,6 +24,7 @@ readonly SBS_CONFIG_DIR="${SBS_CONFIG%/*}"
 readonly SBS_SHARE="$SBS_WORK_DIR/share.txt"
 readonly SBS_IPCACHE="$SBS_WORK_DIR/.exit_ip"
 readonly SBS_REPO="Oterea/sing-box-shell"
+readonly SBS_REPO_MARKER="$SBS_WORK_DIR/.sbs-repo-owned"
 
 # 脚本统一使用 sudo -n 调用系统动作；root 运行时直接绕过 sudo，避免依赖
 # sudo 是否安装或是否允许 root 再次授权。
@@ -725,8 +726,12 @@ pkg_prepare_rpm_repo() {
 pkg_prepare_repo() { # $1=deb or rpm
     local pm="$1"
     case "$pm" in
-    deb) pkg_prepare_deb_repo ;;
-    rpm) pkg_prepare_rpm_repo ;;
+    deb)
+        pkg_prepare_deb_repo && touch "$SBS_REPO_MARKER"
+        ;;
+    rpm)
+        pkg_prepare_rpm_repo && touch "$SBS_REPO_MARKER"
+        ;;
     *) return 1 ;;
     esac
 }
@@ -760,6 +765,20 @@ pkg_kernel_install() { # $1=deb/rpm $2=stable package name or sing-box-beta
     esac
 }
 
+pkg_kernel_size() { # $1=deb/rpm $2=package name
+    local pm="$1" package="$2" size
+    case "$pm" in
+    deb)
+        size=$(dpkg-query -W -f='${Installed-Size}' "$package" 2>/dev/null) || return 1
+        printf '%sK\n' "$size"
+        ;;
+    rpm)
+        size=$(rpm -q --qf '%{SIZE}' "$package" 2>/dev/null) || return 1
+        awk -v b="$size" 'BEGIN { printf "%.1fM\\n", b / 1048576 }'
+        ;;
+    esac
+}
+
 pkg_kernel_remove() {
     local pm rc=0
     pm=$(pkg_manager) || return 0
@@ -786,6 +805,7 @@ pkg_kernel_remove() {
 
 pkg_repo_remove() {
     local pm
+    [ -f "$SBS_REPO_MARKER" ] || return 0
     pm=$(pkg_manager) || return 0
     case "$pm" in
     deb)
@@ -796,6 +816,7 @@ pkg_repo_remove() {
         sudo -n rm -f /etc/yum.repos.d/sing-box.repo
         ;;
     esac
+    rm -f "$SBS_REPO_MARKER"
 }
 
 # sbs 自更新仍然是仓库文件下载，不属于 sing-box 内核安装。保留独立的
@@ -842,15 +863,15 @@ tun_info() {
 # 所以两边必须在同一处算出来，不能让人自己改。
 readonly TUN_OFFSET=10000
 
-# jq 里判 loopback 的公共定义，三个查询共用
-readonly TUN_JQ_LOOP='def loop: startswith("127.") or . == "::1" or . == "localhost";'
+# jq 里判 loopback 的公共定义，三个查询共用；兼容 [::1] 这种带方括号的地址。
+readonly TUN_JQ_LOOP='def loop: sub("^\\[";"") | sub("\\]$";"") | startswith("127.") or . == "::1" or . == "localhost";'
 
 # 所有需要转发的端口，一行一个
 tunnel_ports() {
     [ -f "$SBS_CONFIG" ] || return 1
     jq -r "$TUN_JQ_LOOP"'
         [ (.experimental.clash_api.external_controller // empty
-             | capture("^(?<h>.*):(?<p>[0-9]+)$") | select(.h|loop) | .p | tonumber),
+             | capture("^(?<h>\\[[^]]+\\]|[^:]+):(?<p>[0-9]+)$") | select(.h|loop) | .p | tonumber),
           (.services[]? | select(.type=="api") | select((.listen // "")|loop) | .listen_port) ]
         | unique | .[]' "$SBS_CONFIG" 2>/dev/null
 }
@@ -862,6 +883,13 @@ tunnel_dashboards() {
         .services[]? | select(.type=="api") | select((.listen // "")|loop)
         | select((.dashboard.enabled // false) == true)
         | .listen_port' "$SBS_CONFIG" 2>/dev/null
+}
+
+tunnel_has_secret() {
+    [ -f "$SBS_CONFIG" ] || return 1
+    jq -e '((.experimental.clash_api.secret // "") != "") or
+        any(.services[]?; .type == "api" and ((.secret // "") != ""))' \
+        "$SBS_CONFIG" >/dev/null 2>&1
 }
 
 # 服务器地址。$SSH_CONNECTION 第三段是这条连接在服务器侧的 socket 地址，
@@ -1327,6 +1355,9 @@ cmd_tunnel() {
         lp=$((dp + TUN_OFFSET))
         printf '    %shttp://127.0.0.1:%s/dashboard%s\n' "$C_CYAN" "$lp" "$C_RESET"
     done < <(tunnel_dashboards)
+    tunnel_has_secret &&
+        printf '\n  %sAPI secret is enabled; use it when the dashboard or API asks for authentication%s\n' \
+            "$C_YELLOW" "$C_RESET"
     [ "$guessed" -eq 1 ] ||
         printf '\n  %stype your server address after the %s@ - this box sits behind NAT\n  and cannot see its own public address%s\n' \
             "$C_YELLOW" "$(whoami)" "$C_RESET"
@@ -1830,7 +1861,7 @@ menu_kernel_flow() {
 
 # ── 任务：通过官方包管理器安装/更新内核 ──
 task_install_kernel() { # $1=包管理器 $2=包名
-    local pm="$1" package="$2" version
+    local pm="$1" package="$2" version size
 
     task_begin target repository index install service verify
     task_step 0
@@ -1864,7 +1895,8 @@ task_install_kernel() { # $1=包管理器 $2=包名
             "check the package-manager result"
         return 1
     }
-    task_ok "$version" ""
+    size=$(pkg_kernel_size "$pm" "$package" 2>/dev/null || true)
+    task_ok "$version" "${size:+$size installed}"
 
     task_step 4
     if ! task_run svc_enable_unit; then
@@ -2199,6 +2231,12 @@ main() {
     ui_init_colors
     ui_init_charset
     ui_build_logo # 要等前两个定完颜色才能拼
+    case "${1:-}" in
+    help | -h | --help)
+        cli_dispatch "$@"
+        return 0
+        ;;
+    esac
     core_check_deps || exit 1
     core_check_sudo || exit 1
     core_ensure_workdir || die "cannot create $SBS_WORK_DIR"

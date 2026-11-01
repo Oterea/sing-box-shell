@@ -135,26 +135,14 @@ curl_bin=$(command -v curl) ||
 good curl "$curl_bin"
 
 dir=$(dirname "$exec")
-need_sudo() {
-    command -v sudo >/dev/null 2>&1 ||
-        die target "no write access to $dir" "run as root"
-}
-# 目录不在就先自己建，建不动才请 sudo。
+# 安装器已经要求 root，目录和最终文件直接使用系统权限。
 made=""
 if [ ! -d "$dir" ]; then
-    mkdir -p "$dir" 2>/dev/null || {
-        need_sudo
-        sudo mkdir -p "$dir" && sudo chmod 755 "$dir" || die target "cannot create $dir"
-    }
+    mkdir -p "$dir" || die target "cannot create $dir"
+    chmod 755 "$dir" || die target "cannot chmod $dir"
     made="  created"
 fi
-# 目标目录本来就可写就别惊动 sudo。
-SUDO=""
-[ -w "$dir" ] || {
-    SUDO=sudo
-    need_sudo
-}
-good target "$dir$made${SUDO:+  via sudo}"
+good target "$dir$made"
 
 # 脚本源，按优先级排列。SBS_MIRROR 可覆盖（只用指定的那个）。
 # 不缓存的排前面：jsDelivr 是 CDN，@main 有约 12h TTL，push 后会持续吐旧版
@@ -172,8 +160,7 @@ tmpdir=$(mktemp -d) || die temp "cannot create a temp directory"
 stage="$dir/.$(basename "$exec").$$.tmp"
 cleanup() {
     rm -rf "$tmpdir"
-    # 收尾不该弹密码框，用 -n；凭据几秒前刚用过，正常都还在缓存里
-    ${SUDO:+sudo -n} rm -f "$stage" 2>/dev/null
+    rm -f "$stage" 2>/dev/null
 }
 trap cleanup EXIT # 正常结束、报错、Ctrl-C 都会清
 
@@ -217,10 +204,10 @@ good verify "shebang, $(fmt_size "$size"), syntax ok"
 say install "$exec"
 [ -e "$exec" ] && replaced="  replaced" || replaced="  new"
 # 先复制到中转名字（全新名字，没有进程在用，覆盖它是安全的）
-$SUDO cp "$tmpdir/sbs.sh" "$stage" || die install "cannot write $stage"
-$SUDO chmod 755 "$stage" || die install "cannot chmod $stage"
+cp "$tmpdir/sbs.sh" "$stage" || die install "cannot write $stage"
+chmod 755 "$stage" || die install "cannot chmod $stage"
 # 再改名顶替。同盘 rename，原子；正在运行的旧脚本仍持有旧 inode，不会被读串
-$SUDO mv -f "$stage" "$exec" || die install "cannot replace $exec"
+mv -f "$stage" "$exec" || die install "cannot replace $exec"
 back
 good install "$exec$replaced"
 
