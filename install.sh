@@ -211,4 +211,4 @@ mv -f "$stage" "$exec" || die install "cannot replace $exec"
 back
 good install "$exec$replaced"
 
-printf '\n     %srun%s %ssbs%s %sto get started%s\n' "$DIM" "$RESET" "$BOLD" "$RESET" "$DIM" "$RESET"
+printf '\n     %srun%s %ssudo sbs%s %sto get started%s\n' "$DIM" "$RESET" "$BOLD" "$RESET" "$DIM" "$RESET"
