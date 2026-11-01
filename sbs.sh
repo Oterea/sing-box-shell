@@ -770,7 +770,7 @@ pkg_kernel_size() { # $1=deb/rpm $2=package name
     case "$pm" in
     deb)
         size=$(dpkg-query -W -f='${Installed-Size}' "$package" 2>/dev/null) || return 1
-        printf '%sK\n' "$size"
+        fmt_size $((size * 1024))
         ;;
     rpm)
         size=$(rpm -q --qf '%{SIZE}' "$package" 2>/dev/null) || return 1
