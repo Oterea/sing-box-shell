@@ -722,20 +722,40 @@ pkg_prepare_rpm_repo() {
         sudo -n tee /etc/yum.repos.d/sing-box.repo >/dev/null
 }
 
-pkg_kernel_install() { # $1=stable package name or sing-box-beta
-    local package="$1" pm
-    pm=$(pkg_manager) || {
-        core_error "unsupported package manager"
-        return 1
-    }
+pkg_prepare_repo() { # $1=deb or rpm
+    local pm="$1"
+    case "$pm" in
+    deb) pkg_prepare_deb_repo ;;
+    rpm) pkg_prepare_rpm_repo ;;
+    *) return 1 ;;
+    esac
+}
+
+pkg_update_index() { # $1=deb or rpm
+    local pm="$1"
     case "$pm" in
     deb)
-        pkg_prepare_deb_repo || return 1
-        sudo -n apt-get update && sudo -n apt-get install -y "$package"
+        sudo -n apt-get update
         ;;
     rpm)
-        pkg_prepare_rpm_repo || return 1
+        sudo -n dnf makecache --refresh
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+pkg_kernel_install() { # $1=deb/rpm $2=stable package name or sing-box-beta
+    local pm="$1" package="$2"
+    case "$pm" in
+    deb)
+        sudo -n apt-get install -y "$package"
+        ;;
+    rpm)
         sudo -n dnf install -y "$package"
+        ;;
+    *)
+        core_error "unsupported package manager"
+        return 1
         ;;
     esac
 }
@@ -1227,7 +1247,11 @@ cmd_update_self() {
 cmd_start() {
     cfg_check || return 1
     if svc_start; then
-        svc_wait_tun
+        if svc_wait_tun; then
+            core_info "tun ready"
+        else
+            core_warn "service started but tun was not detected"
+        fi
         core_info "sing-box started"
     else
         core_error "start failed - journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
@@ -1248,7 +1272,11 @@ cmd_stop() {
 cmd_restart() {
     cfg_check || return 1
     if svc_restart; then
-        svc_wait_tun
+        if svc_wait_tun; then
+            core_info "tun ready"
+        else
+            core_warn "service restarted but tun was not detected"
+        fi
         core_info "sing-box restarted"
     else
         core_error "restart failed - journalctl -u $SBS_UNIT_NAME -n 30 --output cat"
@@ -1724,7 +1752,7 @@ task_update_self() {
 
     task_step 2
     if ! script_replace "$tmpdir/sbs.sh"; then
-        task_fail "install failed" "cannot replace $SBS_EXEC" "check sudo -n permissions"
+        task_fail "install failed" "cannot replace $SBS_EXEC" "check root permissions"
         rm -rf "$tmpdir"
         return 1
     fi
@@ -1740,7 +1768,7 @@ task_update_self() {
 # 用 d 而不是 y 做确认键：手滑按到 y 的概率远高于连按两次 d。
 menu_remove_flow() {
     # 默认停在 no —— 危险操作不该按一下就走
-    ui_choose "remove all?" "no" "yes" || return 1
+    ui_choose "remove package/config/sbs?" "no" "yes" || return 1
     [ "$UI_CHOICE" -eq 1 ] || return 1
 
     task_begin service package repository files script
@@ -1783,7 +1811,7 @@ menu_remove_flow() {
 
 # ── 菜单里的「装/更新内核」完整流程 ──
 menu_kernel_flow() {
-    local pm package
+    local pm package current
     pm=$(pkg_manager) || {
         task_begin target
         task_step 0
@@ -1793,7 +1821,8 @@ menu_kernel_flow() {
     }
 
     if [ "$pm" = deb ] || [ "$pm" = rpm ]; then
-        ui_choose "which release?" "stable" "beta" || return 130
+        current=$(kern_version_short 2>/dev/null || printf 'not installed')
+        ui_choose "current $current" "stable" "beta" || return 130
         [ "$UI_CHOICE" -eq 0 ] && package=sing-box || package=sing-box-beta
     fi
     task_install_kernel "$pm" "$package"
@@ -1803,14 +1832,30 @@ menu_kernel_flow() {
 task_install_kernel() { # $1=包管理器 $2=包名
     local pm="$1" package="$2" version
 
-    task_begin repository install service
+    task_begin target repository index install service verify
     task_step 0
     task_ok "$pm  $package" ""
 
     task_step 1
-    if ! task_run pkg_kernel_install "$package"; then
-        task_fail "install failed" "cannot install $package from the official repository" \
+    if ! task_run pkg_prepare_repo "$pm"; then
+        task_fail "repository failed" "could not configure the official package repository" \
+            "check access to sing-box.app"
+        return 1
+    fi
+    task_ok "official repository" ""
+
+    task_step 2
+    if ! task_run pkg_update_index "$pm"; then
+        task_fail "index failed" "could not refresh the package index" \
             "check repository access and package-manager logs"
+        return 1
+    fi
+    task_ok "package index refreshed" ""
+
+    task_step 3
+    if ! task_run pkg_kernel_install "$pm" "$package"; then
+        task_fail "install failed" "cannot install $package from the official repository" \
+            "check package-manager logs"
         return 1
     fi
     version=$(kern_version_short || true)
@@ -1821,7 +1866,7 @@ task_install_kernel() { # $1=包管理器 $2=包名
     }
     task_ok "$version" ""
 
-    task_step 2
+    task_step 4
     if ! task_run svc_enable_unit; then
         task_fail "service setup failed" "could not enable $SBS_UNIT_NAME" \
             "check systemctl and package-manager logs"
@@ -1829,7 +1874,7 @@ task_install_kernel() { # $1=包管理器 $2=包名
     fi
     task_ok "official $SBS_UNIT_NAME" ""
 
-    task_step 3
+    task_step 5
     if ! systemctl cat "$SBS_UNIT_NAME" >/dev/null 2>&1; then
         task_fail "service missing" "the package did not provide $SBS_UNIT_NAME" \
             "check the package installation"
@@ -2032,6 +2077,15 @@ cli_menu() {
         esac
         # 上一个动作的结果显示到下次「有效」按键为止
         foot_reset
+        if [ ! -x "$SBS_BIN" ]; then
+            case "$key" in
+            s | r | c | t)
+                foot_add "$C_YELLOW  sing-box is not installed - press k first$C_RESET" ""
+                UI_DIRTY=1
+                continue
+                ;;
+            esac
+        fi
         case "$key" in
         s) menu_quick cmd_start "started" "start" ;;
         x) menu_quick cmd_stop "stopped" "stop" ;;
@@ -2065,7 +2119,7 @@ cli_menu() {
             return 0
             ;;
         f)
-            ui_spin refreshing net_exit_refresh
+            ui_spin "refresh exit IP" net_exit_refresh
             rc=$?
             foot_reset
             case "$rc" in
