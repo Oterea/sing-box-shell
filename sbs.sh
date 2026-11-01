@@ -1459,7 +1459,9 @@ task_draw() {
     local i st sym color nm
     foot_reset
     for i in "${!TASK_NAMES[@]}"; do
-        printf -v nm '%-10s' "${TASK_NAMES[$i]}"
+        # 任务名固定宽度后再留一格，避免 10 列名称与详情粘在一起：
+        # "repositoryofficial repository" → "repository official repository"。
+        printf -v nm '%-10s ' "${TASK_NAMES[$i]}"
         st="${TASK_STATE[$i]}"
         case "$st" in
         ok) sym="$UI_OK" color="$C_GREEN" ;;
